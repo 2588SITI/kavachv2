@@ -1,0 +1,5 @@
+{
+  "name": "Kavach Diagnostic Dashboard",
+  "description": "Expert diagnostic dashboard for Kavach (TCAS) traction operations, providing real-time technical analysis and system health reports.",
+  "requestFramePermissions": []
+}
