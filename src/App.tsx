@@ -7,13 +7,18 @@ import React, { useState } from 'react';
 import { 
   Shield, 
   Upload, 
-  Zap, 
   CheckCircle2, 
   AlertCircle, 
   BarChart3, 
   Activity, 
   Database,
-  Info
+  Info,
+  Clock,
+  Settings,
+  AlertTriangle,
+  ArrowRight,
+  Zap,
+  MapPin
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -27,7 +32,8 @@ import {
   Pie,
   Cell,
   LineChart,
-  Line
+  Line,
+  LabelList
 } from 'recharts';
 import { parseFile, processDashboardData } from './utils/dataProcessor';
 import { DashboardStats } from './types';
@@ -41,6 +47,7 @@ export default function App() {
   });
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [activeTab, setActiveTab] = useState('summary');
+  const [tagSearch, setTagSearch] = useState('');
 
   const handleFileUpload = async (type: keyof typeof files, file: File) => {
     setFiles((prev) => ({ ...prev, [type]: file }));
@@ -121,23 +128,422 @@ export default function App() {
                 <p className="text-emerald-400 font-bold text-sm tracking-widest uppercase mb-1">Diagnostic Report</p>
                 <h2 className="text-4xl font-bold text-white tracking-tight">Loco {stats.locoId}</h2>
               </div>
-              <div className="flex gap-1 p-1 glass-card rounded-xl overflow-x-auto max-w-2xl">
+              <div className="flex gap-1 p-1 glass-card rounded-xl overflow-x-auto max-w-3xl">
                 <TabButton active={activeTab === 'summary'} onClick={() => setActiveTab('summary')} label="Summary" />
                 <TabButton active={activeTab === 'mapping'} onClick={() => setActiveTab('mapping')} label="Mapping" />
-                <TabButton active={activeTab === 'nms'} onClick={() => setActiveTab('nms')} label="NMS Correlation" />
-                <TabButton active={activeTab === 'sync'} onClick={() => setActiveTab('sync')} label="Sync Analysis" />
-                <TabButton active={activeTab === 'interval'} onClick={() => setActiveTab('interval')} label="Interval Analysis" />
+                <TabButton active={activeTab === 'station'} onClick={() => setActiveTab('station')} label="Station Analysis" />
+                <TabButton active={activeTab === 'expert'} onClick={() => setActiveTab('expert')} label="Expert Diagnostics" />
+                <TabButton active={activeTab === 'nms'} onClick={() => setActiveTab('nms')} label="NMS" />
+                <TabButton active={activeTab === 'sync'} onClick={() => setActiveTab('sync')} label="Sync" />
+                <TabButton active={activeTab === 'interval'} onClick={() => setActiveTab('interval')} label="Interval" />
               </div>
             </div>
 
             {activeTab === 'summary' && <ExecutiveSummary stats={stats} />}
             {activeTab === 'mapping' && <DeepMapping stats={stats} files={files} />}
+            {activeTab === 'station' && <StationAnalysis stats={stats} />}
+            {activeTab === 'expert' && <ExpertDiagnostics stats={stats} tagSearch={tagSearch} setTagSearch={setTagSearch} />}
             {activeTab === 'nms' && <NMSAnalysis stats={stats} />}
             {activeTab === 'sync' && <SyncAnalysis stats={stats} />}
             {activeTab === 'interval' && <IntervalAnalysis stats={stats} />}
           </div>
         )}
       </main>
+    </div>
+  );
+}
+
+function StationAnalysis({ stats }: { stats: DashboardStats }) {
+  // Group stats by station for the table but keep individual for the chart if needed
+  // Or better, prepare a chart-friendly data structure
+  const chartData = stats.stationStats.reduce((acc: any[], curr) => {
+    const existing = acc.find(a => a.stationId === curr.stationId);
+    const suffix = curr.direction.toLowerCase().includes('nominal') ? 'Nominal' : 
+                   curr.direction.toLowerCase().includes('reverse') ? 'Reverse' : curr.direction;
+    
+    if (existing) {
+      existing[`perc_${suffix}`] = curr.percentage;
+      existing[`received_${suffix}`] = curr.received;
+      existing[`expected_${suffix}`] = curr.expected;
+    } else {
+      acc.push({
+        stationId: curr.stationId,
+        [`perc_${suffix}`]: curr.percentage,
+        [`received_${suffix}`]: curr.received,
+        [`expected_${suffix}`]: curr.expected
+      });
+    }
+    return acc;
+  }, []);
+
+  return (
+    <div className="space-y-6">
+      <div className="glass-card p-8 rounded-2xl">
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-xl font-bold text-white flex items-center gap-2">
+            <BarChart3 className="w-6 h-6 text-emerald-400" />
+            Station-wise RFCOMM Performance (Nominal vs Reverse)
+          </h3>
+          <div className="flex gap-4 text-[10px] font-bold uppercase tracking-widest">
+            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-emerald-500 rounded" /> Healthy ({'>'}= 95%)</div>
+            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-rose-500 rounded" /> Critical ({'<'} 95%)</div>
+          </div>
+        </div>
+        
+        <div className="h-[500px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart 
+              data={stats.stationStats.map(s => ({ ...s, label: `${s.stationId} (${s.direction})` }))} 
+              margin={{ bottom: 70 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+              <XAxis 
+                dataKey="label" 
+                stroke="#64748b" 
+                fontSize={10}
+                angle={-45}
+                textAnchor="end"
+                interval={0}
+              />
+              <YAxis 
+                stroke="#64748b" 
+                domain={[0, 100]} 
+                fontSize={10}
+                label={{ value: 'RFCOMM Success %', angle: -90, position: 'insideLeft', fill: '#64748b', fontSize: 12 }} 
+              />
+              <Tooltip 
+                contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '12px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)' }}
+                itemStyle={{ color: '#f8fafc', fontWeight: 'bold' }}
+                cursor={{ fill: 'rgba(255,255,255,0.05)' }}
+                formatter={(value: number, name: string, props: any) => [
+                  `${value.toFixed(2)}%`, 
+                  `Success (${props.payload.direction})`
+                ]}
+              />
+              <Bar dataKey="percentage" radius={[4, 4, 0, 0]} barSize={30}>
+                {stats.stationStats.map((entry, index) => (
+                  <Cell 
+                    key={`cell-${index}`} 
+                    fill={entry.percentage < 95 ? '#ef4444' : '#10b981'} 
+                    fillOpacity={0.8}
+                  />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="glass-card p-6 rounded-2xl">
+        <h4 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Detailed RFCOMM Log Mapping</h4>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-slate-500 uppercase text-[10px] font-bold border-b border-white/5">
+              <tr>
+                <th className="pb-3 px-4">Station ID</th>
+                <th className="pb-3 px-4">Direction</th>
+                <th className="pb-3 px-4">Expected</th>
+                <th className="pb-3 px-4">Received</th>
+                <th className="pb-3 px-4">Success %</th>
+              </tr>
+            </thead>
+            <tbody className="text-slate-300">
+              {stats.stationStats.map((s, i) => (
+                <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                  <td className="py-3 px-4 font-bold text-white">{s.stationId}</td>
+                  <td className="py-3 px-4">
+                    <span className={cn(
+                      "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
+                      s.direction.toLowerCase().includes('nominal') ? "bg-blue-500/20 text-blue-400" : "bg-purple-500/20 text-purple-400"
+                    )}>
+                      {s.direction}
+                    </span>
+                  </td>
+                  <td className="py-3 px-4">{s.expected}</td>
+                  <td className="py-3 px-4">{s.received}</td>
+                  <td className="py-3 px-4">
+                    <span className={cn(
+                      "font-bold",
+                      s.percentage >= 95 ? "text-emerald-400" : "text-rose-400"
+                    )}>
+                      {s.percentage.toFixed(2)}%
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExpertDiagnostics({ stats, tagSearch, setTagSearch }: { stats: DashboardStats; tagSearch: string; setTagSearch: (v: string) => void }) {
+  const filteredTags = stats.tagLinkIssues.filter(t => 
+    t.info.toLowerCase().includes(tagSearch.toLowerCase()) || 
+    t.error.toLowerCase().includes(tagSearch.toLowerCase()) ||
+    t.stationId.toLowerCase().includes(tagSearch.toLowerCase())
+  );
+
+  return (
+    <div className="space-y-8">
+      {/* Mode Degradation */}
+      <div className="glass-card p-6 rounded-2xl">
+        <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+          <Activity className="w-5 h-5 text-rose-400" />
+          Mode Degradation Events
+        </h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-slate-500 uppercase text-[10px] font-bold border-b border-white/5">
+              <tr>
+                <th className="pb-3 px-4">Time</th>
+                <th className="pb-3 px-4">From</th>
+                <th className="pb-3 px-4">To</th>
+                <th className="pb-3 px-4">Reason</th>
+                <th className="pb-3 px-4">LP Response</th>
+              </tr>
+            </thead>
+            <tbody className="text-slate-300">
+              {stats.modeDegradations.length > 0 ? stats.modeDegradations.map((d, i) => (
+                <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                  <td className="py-3 px-4 font-mono text-xs">{d.time}</td>
+                  <td className="py-3 px-4"><span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded text-[10px] font-bold">{d.from}</span></td>
+                  <td className="py-3 px-4"><span className="px-2 py-0.5 bg-rose-500/20 text-rose-400 rounded text-[10px] font-bold">{d.to}</span></td>
+                  <td className="py-3 px-4">{d.reason}</td>
+                  <td className="py-3 px-4 italic text-slate-400">{d.lpResponse}</td>
+                </tr>
+              )) : (
+                <tr><td colSpan={5} className="py-8 text-center text-slate-500">No mode degradation events detected.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-8">
+        {/* Brake Applications */}
+        <div className="glass-card p-6 rounded-2xl">
+          <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+            <Zap className="w-5 h-5 text-amber-400" />
+            Brake Applications by Kavach
+          </h3>
+          <div className="space-y-3">
+            {stats.brakeApplications.length > 0 ? stats.brakeApplications.map((b, i) => (
+              <div key={i} className="bg-white/5 p-4 rounded-xl border border-white/5 flex justify-between items-center">
+                <div>
+                  <p className="text-xs font-bold text-white">{b.type}</p>
+                  <p className="text-[10px] text-slate-500">{b.time} | Loc: {b.location}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-bold text-amber-400">{b.speed} Kmph</p>
+                </div>
+              </div>
+            )) : <p className="text-center py-4 text-slate-500 text-sm">No brake applications logged.</p>}
+          </div>
+        </div>
+
+        {/* SOS Events */}
+        <div className="glass-card p-6 rounded-2xl">
+          <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+            <AlertCircle className="w-5 h-5 text-rose-500" />
+            SOS Events
+          </h3>
+          <div className="space-y-3">
+            {stats.sosEvents.length > 0 ? stats.sosEvents.map((s, i) => (
+              <div key={i} className="bg-rose-500/10 p-4 rounded-xl border border-rose-500/20 flex justify-between items-center">
+                <div>
+                  <p className="text-xs font-bold text-rose-400">SOS Triggered</p>
+                  <p className="text-[10px] text-slate-500">{s.time} | Source: {s.source}</p>
+                </div>
+                <div className="text-right">
+                  <span className="px-2 py-1 bg-rose-500 text-white rounded text-[10px] font-bold uppercase tracking-tighter">Critical</span>
+                </div>
+              </div>
+            )) : <p className="text-center py-4 text-slate-500 text-sm">No SOS events detected.</p>}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-8">
+        {/* Signal Overrides */}
+        <div className="glass-card p-6 rounded-2xl">
+          <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+            <Shield className="w-5 h-5 text-blue-400" />
+            Signal Override Cases
+          </h3>
+          <div className="space-y-3">
+            {stats.signalOverrides.length > 0 ? stats.signalOverrides.map((s, i) => (
+              <div key={i} className="bg-white/5 p-4 rounded-xl border border-white/5 flex justify-between items-center">
+                <div>
+                  <p className="text-xs font-bold text-white">Signal ID: {s.signalId}</p>
+                  <p className="text-[10px] text-slate-500">{s.time}</p>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs font-bold text-blue-400">{s.status}</span>
+                </div>
+              </div>
+            )) : <p className="text-center py-4 text-slate-500 text-sm">No signal override cases found.</p>}
+          </div>
+        </div>
+
+        {/* Loco Length Variations (TRNMSNMA) */}
+        <div className="glass-card p-6 rounded-2xl border-t-4 border-amber-500 col-span-2">
+          <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+            <Settings className="w-5 h-5 text-amber-400" />
+            Loco Length Variations (TRNMSNMA)
+          </h3>
+          <div className="space-y-4">
+            <div className="bg-white/5 p-4 rounded-xl border border-white/5">
+              <p className="text-xs text-slate-400 uppercase font-bold mb-4">Unique Lengths Detected with Context</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {stats.uniqueTrainLengths.length > 0 ? stats.uniqueTrainLengths.map((item, i) => (
+                  <div key={i} className={cn(
+                    "p-3 rounded-xl border flex flex-col gap-1",
+                    stats.uniqueTrainLengths.length > 1 ? "bg-rose-500/10 border-rose-500/20" : "bg-emerald-500/10 border-emerald-500/20"
+                  )}>
+                    <div className="flex justify-between items-center">
+                      <span className={cn(
+                        "text-lg font-bold",
+                        stats.uniqueTrainLengths.length > 1 ? "text-rose-400" : "text-emerald-400"
+                      )}>{item.length} m</span>
+                      <span className="text-[10px] font-mono text-slate-500">{item.time}</span>
+                    </div>
+                    <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                      <MapPin className="w-3 h-3" />
+                      <span>Station: {item.stationId}</span>
+                    </div>
+                  </div>
+                )) : <p className="text-slate-500 text-sm italic">No length data found</p>}
+              </div>
+              
+              {stats.uniqueTrainLengths.length > 1 && (
+                <div className="mt-6 p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-start gap-3">
+                  <AlertTriangle className="w-6 h-6 text-rose-400 shrink-0" />
+                  <div>
+                    <p className="text-sm text-rose-300 font-bold uppercase tracking-tight">Critical Alert: Multiple Train Lengths Detected</p>
+                    <p className="text-xs text-rose-400/80 mt-1">
+                      Variations in reported train length (from {stats.uniqueTrainLengths[0].length}m to {stats.uniqueTrainLengths[stats.uniqueTrainLengths.length-1].length}m) detected for Loco {stats.locoId}. 
+                      This is a critical safety concern as it affects braking distance calculations and EBD/SBD curves.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Medha Kavach / Tag Link Issues */}
+      <div className="glass-card p-6 rounded-2xl border-l-4 border-rose-500">
+        <div className="flex flex-col gap-6 mb-6">
+          <div className="flex justify-between items-center">
+            <h3 className="text-lg font-bold text-white flex items-center gap-2">
+              <Info className="w-5 h-5 text-rose-400" />
+              Medha Kavach / Tag Link Info Issues
+            </h3>
+            <div className="flex gap-4">
+              <div className="bg-rose-500/10 px-4 py-2 rounded-xl border border-rose-500/20">
+                <p className="text-[10px] text-slate-400 uppercase font-bold">Main Tag Missing</p>
+                <p className="text-xl font-bold text-rose-400">
+                  {stats.tagLinkIssues.filter(t => t.error === "Main Tag Missing").length}
+                </p>
+              </div>
+              <div className="bg-amber-500/10 px-4 py-2 rounded-xl border border-amber-500/20">
+                <p className="text-[10px] text-slate-400 uppercase font-bold">Duplicate Tag Missing</p>
+                <p className="text-xl font-bold text-amber-400">
+                  {stats.tagLinkIssues.filter(t => t.error === "Duplicate Tag Missing").length}
+                </p>
+              </div>
+            </div>
+          </div>
+          
+          <div className="relative">
+            <input 
+              type="text"
+              placeholder="Search Tag Issues (e.g. Main Tag Missing, Station ID...)"
+              value={tagSearch}
+              onChange={(e) => setTagSearch(e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-all"
+            />
+            <div className="absolute right-4 top-1/2 -translate-y-1/2 flex gap-2">
+              <button 
+                onClick={() => setTagSearch('Main Tag Missing')}
+                className="text-[10px] font-bold uppercase tracking-tighter bg-rose-500/20 text-rose-400 px-2 py-1 rounded hover:bg-rose-500/30 transition-all"
+              >
+                Find Main Missing
+              </button>
+              <button 
+                onClick={() => setTagSearch('Duplicate Tag Missing')}
+                className="text-[10px] font-bold uppercase tracking-tighter bg-amber-500/20 text-amber-400 px-2 py-1 rounded hover:bg-amber-500/30 transition-all"
+              >
+                Find Duplicate Missing
+              </button>
+              {tagSearch && (
+                <button 
+                  onClick={() => setTagSearch('')}
+                  className="text-[10px] font-bold uppercase tracking-tighter bg-white/10 text-slate-400 px-2 py-1 rounded hover:bg-white/20 transition-all"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-slate-500 uppercase text-[10px] font-bold border-b border-white/5">
+              <tr>
+                <th className="pb-3 px-4">Time</th>
+                <th className="pb-3 px-4">Station ID</th>
+                <th className="pb-3 px-4">Tag Link Info</th>
+                <th className="pb-3 px-4">Diagnostic Error</th>
+              </tr>
+            </thead>
+            <tbody className="text-slate-300">
+              {filteredTags.length > 0 ? filteredTags.map((t, i) => (
+                <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                  <td className="py-3 px-4 font-mono text-xs">{t.time}</td>
+                  <td className="py-3 px-4 font-bold text-white">{t.stationId}</td>
+                  <td className="py-3 px-4 text-xs font-mono text-rose-300">{t.info}</td>
+                  <td className="py-3 px-4">
+                    <span className={cn(
+                      "font-bold",
+                      t.error === "Main Tag Missing" ? "text-rose-400" : 
+                      t.error === "Duplicate Tag Missing" ? "text-amber-400" : "text-rose-400"
+                    )}>
+                      {t.error}
+                    </span>
+                  </td>
+                </tr>
+              )) : (
+                <tr><td colSpan={4} className="py-8 text-center text-slate-500">No matching tag issues found.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Short Packets */}
+      <div className="glass-card p-6 rounded-2xl">
+        <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+          <Clock className="w-5 h-5 text-slate-400" />
+          Packet Length Analysis (Below 10 Bytes)
+        </h3>
+        <div className="grid grid-cols-4 gap-4">
+          {stats.shortPackets.length > 0 ? stats.shortPackets.map((p, i) => (
+            <div key={i} className="bg-white/5 p-3 rounded-xl border border-white/5">
+              <p className="text-[10px] font-bold text-white truncate">{p.type}</p>
+              <div className="flex justify-between items-center mt-1">
+                <span className="text-[9px] text-slate-500">{p.time}</span>
+                <span className="text-[10px] font-bold text-rose-400">Len: {p.length}</span>
+              </div>
+            </div>
+          )) : <p className="col-span-4 text-center py-4 text-slate-500 text-sm">No short packets detected.</p>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -162,9 +568,12 @@ function NMSAnalysis({ stats }: { stats: DashboardStats }) {
                 <Pie
                   data={stats.nmsStatus}
                   cx="50%" cy="50%"
-                  outerRadius={140}
+                  outerRadius={120}
+                  innerRadius={60}
                   dataKey="value"
-                  label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(1)}%`}
+                  minAngle={15}
+                  labelLine={true}
+                  label={({ name, percent }) => percent > 0.05 ? `${name}: ${(percent * 100).toFixed(1)}%` : ''}
                 >
                   {stats.nmsStatus.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={nmsColors[entry.name] || nmsColors.default} />

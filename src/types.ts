@@ -31,10 +31,27 @@ export interface DashboardStats {
   maCount: number;
   nmsFailRate: number;
   avgLag: number;
-  maPackets: { time: string; delay: number; category: string }[];
+  maPackets: { time: string; delay: number; category: string; length: number }[];
   nmsStatus: { name: string; value: number }[];
   intervalDist: { category: string; percentage: number }[];
   diagnosticAdvice: { title: string; detail: string; action: string; severity: 'high' | 'medium' | 'low' }[];
+  
+  // New Expert Fields
+  stationStats: { 
+    stationId: string | number; 
+    direction: string;
+    expected: number; 
+    received: number; 
+    percentage: number;
+  }[];
+  modeDegradations: { time: string; from: string; to: string; reason: string; lpResponse: string }[];
+  shortPackets: { time: string; type: string; length: number }[];
+  brakeApplications: { time: string; type: string; speed: number; location: string }[];
+  signalOverrides: { time: string; signalId: string; status: string }[];
+  sosEvents: { time: string; source: string; type: string }[];
+  trainConfigChanges: { time: string; parameter: string; oldVal: string; newVal: string; stationId: string }[];
+  uniqueTrainLengths: { length: number; time: string; stationId: string }[];
+  tagLinkIssues: { time: string; stationId: string; info: string; error: string }[];
 }
 
 export const bucketDelay = (d: number) => {
