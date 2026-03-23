@@ -18,7 +18,9 @@ import {
   AlertTriangle,
   ArrowRight,
   Zap,
-  MapPin
+  MapPin,
+  Download,
+  FileText
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -38,6 +40,8 @@ import {
 import { parseFile, processDashboardData } from './utils/dataProcessor';
 import { DashboardStats } from './types';
 import { cn } from './utils/cn';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 export default function App() {
   const [files, setFiles] = useState<{ rf: File | null; trn: File | null; radio: File | null }>({
@@ -60,6 +64,98 @@ export default function App() {
     const radio = await parseFile(files.radio);
     const processed = processDashboardData(rf, trn, radio);
     setStats(processed);
+  };
+
+  const generatePDFReport = () => {
+    try {
+      if (!stats) {
+        console.error("No stats available for report");
+        return;
+      }
+      
+      const doc = new jsPDF();
+      const date = new Date().toLocaleString();
+
+      // Header
+      doc.setFontSize(22);
+      doc.setTextColor(0, 102, 204);
+      doc.text('KAVACH EXPERT DIAGNOSTIC REPORT', 105, 20, { align: 'center' });
+      
+      doc.setFontSize(12);
+      doc.setTextColor(100);
+      doc.text(`Generated on: ${date}`, 105, 28, { align: 'center' });
+      doc.line(20, 32, 190, 32);
+
+      // Loco Info
+      doc.setFontSize(14);
+      doc.setTextColor(0);
+      doc.text(`Loco ID: ${stats.locoId}`, 20, 45);
+      doc.text(`Mentored by: CELE Sir`, 20, 52);
+
+      // Executive Summary
+      doc.setFontSize(16);
+      doc.setTextColor(0, 102, 204);
+      doc.text('1. Executive Summary', 20, 65);
+      doc.setFontSize(11);
+      doc.setTextColor(0);
+      doc.text(`Overall Loco Performance: ${stats.locoPerformance.toFixed(2)}%`, 25, 75);
+      doc.text(`NMS Failure Rate: ${stats.nmsFailRate.toFixed(2)}%`, 25, 82);
+      doc.text(`Average MA Refresh Lag: ${stats.avgLag.toFixed(2)}s`, 25, 89);
+
+      let currentY = 100;
+
+      // Tag Issues Table
+      if (stats.tagLinkIssues.length > 0) {
+        doc.setFontSize(16);
+        doc.setTextColor(0, 102, 204);
+        doc.text('2. Critical Tag Link Issues', 20, currentY);
+        
+        const tagRows = stats.tagLinkIssues.map(t => [t.time, t.stationId, t.error, t.info]);
+        autoTable(doc, {
+          startY: currentY + 5,
+          head: [['Time', 'Station ID', 'Error Type', 'Details']],
+          body: tagRows,
+          theme: 'striped',
+          headStyles: { fillColor: [0, 102, 204] },
+          styles: { fontSize: 8 }
+        });
+        currentY = (doc as any).lastAutoTable.finalY + 15;
+      }
+
+      // Diagnostic Advice
+      if (currentY > 240) { doc.addPage(); currentY = 20; }
+      
+      doc.setFontSize(16);
+      doc.setTextColor(0, 102, 204);
+      doc.text('3. Diagnostic Advice & Recommendations', 20, currentY);
+      
+      let adviceY = currentY + 10;
+      stats.diagnosticAdvice.forEach((advice, index) => {
+        if (adviceY > 270) { doc.addPage(); adviceY = 20; }
+        doc.setFontSize(11);
+        doc.setTextColor(0);
+        doc.text(`${index + 1}. ${advice.title} (${advice.severity.toUpperCase()})`, 25, adviceY);
+        doc.setFontSize(9);
+        doc.setTextColor(80);
+        const actionLines = doc.splitTextToSize(`Action: ${advice.action}`, 160);
+        doc.text(actionLines, 30, adviceY + 5);
+        adviceY += 10 + (actionLines.length * 4);
+      });
+
+      // Signature
+      const pageCount = doc.getNumberOfPages();
+      doc.setPage(pageCount);
+      doc.setFontSize(12);
+      doc.setTextColor(0);
+      doc.text('__________________________', 140, 270);
+      doc.text('Authorized Signature', 140, 277);
+      doc.text('Kavach Technical Team', 140, 284);
+
+      doc.save(`Kavach_Report_Loco_${stats.locoId}.pdf`);
+    } catch (error) {
+      console.error("PDF Generation Error:", error);
+      alert("Report generate karne mein samasya aayi hai. Kripya console check karein.");
+    }
   };
 
   return (
@@ -124,9 +220,18 @@ export default function App() {
           <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
             {/* Header */}
             <div className="flex justify-between items-end">
-              <div>
-                <p className="text-emerald-400 font-bold text-sm tracking-widest uppercase mb-1">Diagnostic Report</p>
-                <h2 className="text-4xl font-bold text-white tracking-tight">Loco {stats.locoId}</h2>
+              <div className="flex items-end gap-6">
+                <div>
+                  <p className="text-emerald-400 font-bold text-sm tracking-widest uppercase mb-1">Diagnostic Report</p>
+                  <h2 className="text-4xl font-bold text-white tracking-tight">Loco {stats.locoId}</h2>
+                </div>
+                <button 
+                  onClick={generatePDFReport}
+                  className="mb-1 flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl border border-white/10 transition-all text-sm font-bold"
+                >
+                  <Download className="w-4 h-4 text-emerald-400" />
+                  Download Official Report
+                </button>
               </div>
               <div className="flex gap-1 p-1 glass-card rounded-xl overflow-x-auto max-w-3xl">
                 <TabButton active={activeTab === 'summary'} onClick={() => setActiveTab('summary')} label="Summary" />
