@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Shield, 
   Upload, 
@@ -20,7 +20,17 @@ import {
   Zap,
   MapPin,
   Download,
-  FileText
+  FileText,
+  LogOut,
+  LogIn,
+  History,
+  Trash2,
+  Calendar,
+  FileSearch,
+  ChevronRight,
+  ChevronDown,
+  Flag,
+  MessageSquare
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -35,15 +45,39 @@ import {
   Cell,
   LineChart,
   Line,
-  LabelList
+  LabelList,
+  AreaChart,
+  Area
 } from 'recharts';
 import { parseFile, processDashboardData } from './utils/dataProcessor';
 import { DashboardStats } from './types';
 import { cn } from './utils/cn';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { 
+  auth, 
+  signIn, 
+  signOut, 
+  onAuthStateChanged, 
+  User, 
+  db, 
+  collection, 
+  addDoc,
+  query,
+  where,
+  getDocs,
+  orderBy,
+  limit,
+  doc,
+  getDocFromServer,
+  updateDoc,
+  deleteDoc
+} from './firebase';
+import { format } from 'date-fns';
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const [files, setFiles] = useState<{ rf: File | null; trn: File | null; radio: File | null }>({
     rf: null,
     trn: null,
@@ -52,11 +86,78 @@ export default function App() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [activeTab, setActiveTab] = useState('summary');
   const [tagSearch, setTagSearch] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedStation, setSelectedStation] = useState<string>('All');
   const [selectedLoco, setSelectedLoco] = useState<string>('All');
 
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUser(user);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Test connection to Firestore
+  useEffect(() => {
+    const testConnection = async () => {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration.");
+        }
+      }
+    };
+    testConnection();
+  }, []);
+
   const handleFileUpload = async (type: keyof typeof files, file: File) => {
     setFiles((prev) => ({ ...prev, [type]: file }));
+  };
+
+  const saveAnalysisToHistory = async (processedStats: DashboardStats) => {
+    if (!user) return;
+    
+    setIsSaving(true);
+    try {
+      const timestamp = new Date().toISOString();
+      
+      // Save main report
+      await addDoc(collection(db, 'reports'), {
+        locoId: processedStats.locoId,
+        date: timestamp,
+        overallPerformance: processedStats.locoPerformance,
+        nmsFailRate: processedStats.nmsFailRate,
+        avgLag: processedStats.avgLag,
+        badStations: processedStats.badStns,
+        userId: user.uid,
+        notes: "",
+        status: "Pending",
+        isFlagged: false
+      });
+
+      // Save station history for bad stations
+      const stationHistoryPromises = processedStats.stationStats
+        .filter(s => s.percentage < 95)
+        .map(s => addDoc(collection(db, 'station_history'), {
+          stationId: s.stationId,
+          date: timestamp,
+          locoId: s.locoId,
+          percentage: s.percentage,
+          received: s.received,
+          expected: s.expected,
+          userId: user.uid
+        }));
+
+      await Promise.all(stationHistoryPromises);
+      console.log("Analysis saved to history successfully.");
+    } catch (error) {
+      console.error("Error saving analysis to history:", error);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const analyzeData = async () => {
@@ -70,6 +171,10 @@ export default function App() {
     setStats(processed);
     setSelectedStation('All');
     setSelectedLoco('All');
+
+    if (user) {
+      saveAnalysisToHistory(processed);
+    }
   };
 
   const getFilteredStats = (): DashboardStats | null => {
@@ -540,13 +645,96 @@ export default function App() {
           <p className="text-[10px] text-slate-400 mt-1 italic">Expert Guidance in Traction Operations</p>
         </div>
 
+        {/* User Profile */}
+        <div className="bg-white/5 p-4 rounded-xl border border-white/10 backdrop-blur-sm">
+          {!user ? (
+            <button 
+              onClick={signIn}
+              className="w-full py-2 bg-emerald-500 hover:bg-emerald-400 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all"
+            >
+              <LogIn className="w-3 h-3" /> Login to Save History
+            </button>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <img src={user.photoURL || ''} alt="" className="w-8 h-8 rounded-full border border-emerald-500/30" />
+                <div className="overflow-hidden">
+                  <p className="text-xs font-bold text-white truncate">{user.displayName}</p>
+                  <p className="text-[10px] text-slate-400 truncate">{user.email}</p>
+                </div>
+              </div>
+              <button 
+                onClick={signOut}
+                className="w-full py-1.5 bg-white/5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 rounded-lg text-[10px] font-bold flex items-center justify-center gap-2 transition-all border border-white/5 hover:border-rose-500/20"
+              >
+                <LogOut className="w-3 h-3" /> Logout
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* System Update Note */}
+        <div className="bg-emerald-500/10 p-4 rounded-xl border border-emerald-500/20 backdrop-blur-sm">
+          <div className="flex items-center gap-2 mb-2">
+            <Zap className="w-3 h-3 text-emerald-400" />
+            <p className="text-[10px] uppercase font-bold text-emerald-400 tracking-widest">System Update</p>
+          </div>
+          <p className="text-xs text-slate-300 leading-relaxed">
+            This dashboard can now analyze Kavach data even in the absence of <span className="text-emerald-400 font-semibold">RADIO_1</span> logs, which are often difficult to obtain. It automatically generates a detailed report on Loco TCAS health.
+          </p>
+        </div>
+
+        {/* User Profile / Login */}
+        <div className="p-4 glass-card rounded-xl border border-white/5">
+          {isAuthReady ? (
+            user ? (
+              <div className="space-y-4">
+                <div className="flex items-center gap-3">
+                  {user.photoURL ? (
+                    <img src={user.photoURL} alt={user.displayName || ''} className="w-10 h-10 rounded-full border border-emerald-500/30" referrerPolicy="no-referrer" />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold">
+                      {user.displayName?.charAt(0) || 'U'}
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold text-white truncate">{user.displayName}</p>
+                    <p className="text-[10px] text-slate-400 truncate">{user.email}</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={signOut}
+                  className="w-full py-2 flex items-center justify-center gap-2 text-xs font-bold text-slate-400 hover:text-rose-400 transition-all border border-white/5 hover:border-rose-500/30 rounded-lg"
+                >
+                  <LogOut className="w-3 h-3" /> Logout
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3 text-center">
+                <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">Cloud Storage</p>
+                <p className="text-xs text-slate-300">Login to save analysis history and track station performance over time.</p>
+                <button 
+                  onClick={signIn}
+                  className="w-full py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl border border-white/10 transition-all text-xs font-bold flex items-center justify-center gap-2"
+                >
+                  <LogIn className="w-3 h-3 text-emerald-400" /> Login with Google
+                </button>
+              </div>
+            )
+          ) : (
+            <div className="h-20 flex items-center justify-center">
+              <div className="w-4 h-4 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin"></div>
+            </div>
+          )}
+        </div>
+
         <div className="flex flex-col gap-6">
           <div className="space-y-4">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Data Input Center</h3>
             <div className="space-y-3">
               <FileDrop zone="rf" label="1. RFCOMM (Comm Health)" onUpload={handleFileUpload} file={files.rf} />
               <FileDrop zone="trn" label="2. TRNMSNMA (Software)" onUpload={handleFileUpload} file={files.trn} />
-              <FileDrop zone="radio" label="3. RADIO_1 (Packet Logs)" onUpload={handleFileUpload} file={files.radio} />
+              <FileDrop zone="radio" label="3. RADIO_1 (Optional)" onUpload={handleFileUpload} file={files.radio} />
             </div>
           </div>
 
@@ -576,7 +764,8 @@ export default function App() {
             <div className="space-y-2">
               <h2 className="text-3xl font-bold text-white">Ready for Analysis</h2>
               <p className="text-slate-400 max-w-md mx-auto">
-                Upload your Kavach RF, TRN, and Radio logs to generate a comprehensive diagnostic report.
+                Upload your Kavach RF and TRN logs to generate a comprehensive diagnostic report. 
+                <span className="block mt-2 text-emerald-400/80 text-sm">Now supports analysis without RADIO_1 logs for faster reporting.</span>
               </p>
             </div>
           </div>
@@ -586,10 +775,6 @@ export default function App() {
             <div className="flex flex-col gap-6">
               <div className="flex justify-between items-end">
                 <div className="flex items-end gap-6">
-                  <div>
-                    <p className="text-emerald-400 font-bold text-sm tracking-widest uppercase mb-1">Diagnostic Report</p>
-                    <h2 className="text-4xl font-bold text-white tracking-tight">Loco {stats.locoId}</h2>
-                  </div>
                     <button 
                       onClick={generatePDFReport}
                       className="mb-1 flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl border border-white/10 transition-all text-sm font-bold"
@@ -610,7 +795,7 @@ export default function App() {
                       {selectedLoco === 'All' ? 'Select Loco for Failure Letter' : 'Download Failure Analysis Letter'}
                     </button>
                   </div>
-                <div className="flex gap-1 p-1 glass-card rounded-xl overflow-x-auto max-w-3xl">
+                <div className="flex gap-1 p-1 glass-card rounded-xl overflow-x-auto max-w-4xl">
                   <TabButton active={activeTab === 'summary'} onClick={() => setActiveTab('summary')} label="Summary" />
                   <TabButton active={activeTab === 'mapping'} onClick={() => setActiveTab('mapping')} label="Mapping" />
                   <TabButton active={activeTab === 'station'} onClick={() => setActiveTab('station')} label="Station Analysis" />
@@ -618,6 +803,7 @@ export default function App() {
                   <TabButton active={activeTab === 'nms'} onClick={() => setActiveTab('nms')} label="NMS" />
                   <TabButton active={activeTab === 'sync'} onClick={() => setActiveTab('sync')} label="Sync" />
                   <TabButton active={activeTab === 'interval'} onClick={() => setActiveTab('interval')} label="Interval" />
+                  <TabButton active={activeTab === 'history'} onClick={() => setActiveTab('history')} label="History" />
                 </div>
               </div>
 
@@ -671,6 +857,7 @@ export default function App() {
             {activeTab === 'nms' && filteredStats && <NMSAnalysis stats={filteredStats} />}
             {activeTab === 'sync' && filteredStats && <SyncAnalysis stats={filteredStats} />}
             {activeTab === 'interval' && filteredStats && <IntervalAnalysis stats={filteredStats} />}
+            {activeTab === 'history' && <HistoryView user={user} />}
           </div>
         )}
       </main>
@@ -1452,6 +1639,319 @@ function DeepMapping({ stats, files }: { stats: DashboardStats; files: { rf: Fil
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function HistoryView({ user }: { user: User | null }) {
+  const [reports, setReports] = useState<any[]>([]);
+  const [stationHistory, setStationHistory] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState<'reports' | 'stations'>('reports');
+  const [editingNotes, setEditingNotes] = useState<string | null>(null);
+  const [tempNotes, setTempNotes] = useState("");
+
+  const fetchData = async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      const reportsQuery = query(
+        collection(db, 'reports'),
+        where('userId', '==', user.uid),
+        orderBy('date', 'desc'),
+        limit(50)
+      );
+      const reportsSnapshot = await getDocs(reportsQuery);
+      setReports(reportsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+
+      const stationQuery = query(
+        collection(db, 'station_history'),
+        where('userId', '==', user.uid),
+        orderBy('date', 'desc'),
+        limit(100)
+      );
+      const stationSnapshot = await getDocs(stationQuery);
+      setStationHistory(stationSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    } catch (error) {
+      console.error("Error fetching history:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, [user]);
+
+  const toggleFlag = async (reportId: string, currentFlag: boolean) => {
+    try {
+      const reportRef = doc(db, 'reports', reportId);
+      await updateDoc(reportRef, { isFlagged: !currentFlag });
+      setReports(reports.map(r => r.id === reportId ? { ...r, isFlagged: !currentFlag } : r));
+    } catch (error) {
+      console.error("Error toggling flag:", error);
+    }
+  };
+
+  const toggleStatus = async (reportId: string, currentStatus: string) => {
+    const nextStatus = currentStatus === 'Pending' ? 'Resolved' : 'Pending';
+    try {
+      const reportRef = doc(db, 'reports', reportId);
+      await updateDoc(reportRef, { status: nextStatus });
+      setReports(reports.map(r => r.id === reportId ? { ...r, status: nextStatus } : r));
+    } catch (error) {
+      console.error("Error toggling status:", error);
+    }
+  };
+
+  const saveNotes = async (reportId: string) => {
+    try {
+      const reportRef = doc(db, 'reports', reportId);
+      await updateDoc(reportRef, { notes: tempNotes });
+      setReports(reports.map(r => r.id === reportId ? { ...r, notes: tempNotes } : r));
+      setEditingNotes(null);
+    } catch (error) {
+      console.error("Error saving notes:", error);
+    }
+  };
+
+  const deleteReport = async (reportId: string) => {
+    if (!window.confirm("Are you sure you want to delete this report? This action cannot be undone.")) return;
+    try {
+      await deleteDoc(doc(db, 'reports', reportId));
+      setReports(reports.filter(r => r.id !== reportId));
+    } catch (error) {
+      console.error("Error deleting report:", error);
+    }
+  };
+
+  if (!user) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center text-center space-y-4">
+        <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center">
+          <History className="w-8 h-8 text-slate-500" />
+        </div>
+        <div className="space-y-2">
+          <h3 className="text-xl font-bold text-white">Login Required</h3>
+          <p className="text-slate-400 max-w-sm">Please login with your Google account to view and save analysis history.</p>
+        </div>
+        <button 
+          onClick={signIn}
+          className="px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-white rounded-xl font-bold transition-all shadow-lg shadow-emerald-500/20 flex items-center gap-2"
+        >
+          <LogIn className="w-4 h-4" /> Login with Google
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex justify-between items-center">
+        <div className="flex gap-2 p-1 bg-white/5 rounded-xl border border-white/5">
+          <button 
+            onClick={() => setView('reports')}
+            className={cn(
+              "px-4 py-2 rounded-lg text-xs font-bold transition-all",
+              view === 'reports' ? "bg-emerald-500 text-white shadow-lg" : "text-slate-400 hover:text-white"
+            )}
+          >
+            Analysis Reports
+          </button>
+          <button 
+            onClick={() => setView('stations')}
+            className={cn(
+              "px-4 py-2 rounded-lg text-xs font-bold transition-all",
+              view === 'stations' ? "bg-emerald-500 text-white shadow-lg" : "text-slate-400 hover:text-white"
+            )}
+          >
+            Station Failures
+          </button>
+        </div>
+        <p className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">
+          Showing last {view === 'reports' ? reports.length : stationHistory.length} records
+        </p>
+      </div>
+
+      {loading ? (
+        <div className="h-64 flex items-center justify-center">
+          <div className="w-8 h-8 border-4 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin"></div>
+        </div>
+      ) : view === 'reports' ? (
+        <div className="grid gap-4">
+          {reports.length > 0 ? reports.map((report) => (
+            <div key={report.id} className={cn(
+              "glass-card p-6 rounded-2xl border transition-all group relative",
+              report.isFlagged ? "border-amber-500/50 bg-amber-500/5 shadow-lg shadow-amber-500/10" : "border-white/5 hover:border-emerald-500/30"
+            )}>
+              <div className="flex justify-between items-start">
+                <div className="flex gap-4">
+                  <div className={cn(
+                    "w-12 h-12 rounded-xl flex items-center justify-center border",
+                    report.isFlagged ? "bg-amber-500/20 border-amber-500/30" : "bg-emerald-500/10 border-emerald-500/20"
+                  )}>
+                    <FileSearch className={cn("w-6 h-6", report.isFlagged ? "text-amber-400" : "text-emerald-400")} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <h4 className="text-lg font-bold text-white">Loco {report.locoId}</h4>
+                      {report.isFlagged && (
+                        <span className="px-2 py-0.5 bg-amber-500 text-black text-[10px] font-black rounded uppercase tracking-tighter">Watchlist</span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-500 flex items-center gap-2 mt-1">
+                      <Calendar className="w-3 h-3" /> {format(new Date(report.date), 'PPP p')}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="text-right">
+                    <p className="text-[10px] text-slate-500 uppercase font-bold tracking-widest mb-1">Performance</p>
+                    <p className={cn(
+                      "text-2xl font-bold",
+                      report.overallPerformance >= 98 ? "text-emerald-400" : "text-amber-400"
+                    )}>
+                      {report.overallPerformance.toFixed(1)}%
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <button 
+                      onClick={() => toggleFlag(report.id, report.isFlagged)}
+                      className={cn(
+                        "p-2 rounded-lg border transition-all",
+                        report.isFlagged ? "bg-amber-500 text-black border-amber-500" : "bg-white/5 border-white/10 text-slate-500 hover:text-amber-400"
+                      )}
+                      title={report.isFlagged ? "Remove from Watchlist" : "Add to Watchlist"}
+                    >
+                      <Flag className="w-4 h-4" />
+                    </button>
+                    <button 
+                      onClick={() => deleteReport(report.id)}
+                      className="p-2 rounded-lg bg-white/5 border border-white/10 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-all"
+                      title="Delete Report"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 grid grid-cols-4 gap-4 pt-4 border-t border-white/5">
+                <div className="space-y-1">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold">NMS Fail Rate</p>
+                  <p className="text-sm font-bold text-white">{report.nmsFailRate.toFixed(1)}%</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold">Avg Lag</p>
+                  <p className="text-sm font-bold text-white">{report.avgLag.toFixed(2)}s</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold">Status</p>
+                  <button 
+                    onClick={() => toggleStatus(report.id, report.status || 'Pending')}
+                    className={cn(
+                      "flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-all",
+                      report.status === 'Resolved' ? "bg-emerald-500/20 text-emerald-400" : "bg-amber-500/20 text-amber-400"
+                    )}
+                  >
+                    {report.status === 'Resolved' ? <CheckCircle2 className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
+                    {report.status || 'Pending'}
+                  </button>
+                </div>
+                <div className="flex items-end justify-end">
+                  <button className="text-emerald-400 hover:text-emerald-300 text-xs font-bold flex items-center gap-1 transition-colors">
+                    View Details <ChevronRight className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4 pt-4 border-t border-white/5">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-2">
+                    <MessageSquare className="w-3 h-3" /> Technician Notes
+                  </p>
+                  {editingNotes !== report.id ? (
+                    <button 
+                      onClick={() => { setEditingNotes(report.id); setTempNotes(report.notes || ""); }}
+                      className="text-[10px] text-emerald-400 hover:underline font-bold"
+                    >
+                      {report.notes ? 'Edit' : 'Add Note'}
+                    </button>
+                  ) : (
+                    <div className="flex gap-2">
+                      <button onClick={() => saveNotes(report.id)} className="text-[10px] text-emerald-400 font-bold">Save</button>
+                      <button onClick={() => setEditingNotes(null)} className="text-[10px] text-slate-500 font-bold">Cancel</button>
+                    </div>
+                  )}
+                </div>
+                {editingNotes === report.id ? (
+                  <textarea 
+                    value={tempNotes}
+                    onChange={(e) => setTempNotes(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500/50 min-h-[60px]"
+                    placeholder="Enter maintenance notes..."
+                  />
+                ) : (
+                  <p className="text-xs text-slate-400 italic">
+                    {report.notes || "No notes added yet."}
+                  </p>
+                )}
+              </div>
+            </div>
+          )) : (
+            <div className="py-20 text-center glass-card rounded-2xl border border-white/5">
+              <p className="text-slate-500">No analysis reports found.</p>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="glass-card rounded-2xl border border-white/5 overflow-hidden">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-white/5 text-slate-500 uppercase text-[10px] font-bold border-b border-white/5">
+              <tr>
+                <th className="py-4 px-6">Date</th>
+                <th className="py-4 px-6">Station</th>
+                <th className="py-4 px-6">Loco ID</th>
+                <th className="py-4 px-6">Performance</th>
+                <th className="py-4 px-6">Status</th>
+              </tr>
+            </thead>
+            <tbody className="text-slate-300 divide-y divide-white/5">
+              {stationHistory.length > 0 ? stationHistory.map((entry) => (
+                <tr key={entry.id} className="hover:bg-white/5 transition-colors">
+                  <td className="py-4 px-6 text-xs text-slate-500">{format(new Date(entry.date), 'MMM d, yyyy')}</td>
+                  <td className="py-4 px-6 font-bold text-white">{entry.stationName}</td>
+                  <td className="py-4 px-6 font-mono text-xs">{entry.locoId}</td>
+                  <td className="py-4 px-6">
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden w-24">
+                        <div 
+                          className={cn(
+                            "h-full rounded-full",
+                            entry.performance < 90 ? "bg-rose-500" : "bg-amber-500"
+                          )}
+                          style={{ width: `${entry.performance}%` }}
+                        />
+                      </div>
+                      <span className="font-bold">{entry.performance.toFixed(1)}%</span>
+                    </div>
+                  </td>
+                  <td className="py-4 px-6">
+                    <span className={cn(
+                      "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
+                      entry.performance < 90 ? "bg-rose-500/20 text-rose-400" : "bg-amber-500/20 text-amber-400"
+                    )}>
+                      {entry.performance < 90 ? 'Critical' : 'Marginal'}
+                    </span>
+                  </td>
+                </tr>
+              )) : (
+                <tr><td colSpan={5} className="py-20 text-center text-slate-500">No station failure history found.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

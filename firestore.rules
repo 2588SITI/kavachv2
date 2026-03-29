@@ -1,0 +1,91 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: /reports/{reportId}
+    // Fields:
+    //   - locoId: string (required)
+    //   - date: string (required, ISO 8601)
+    //   - overallPerformance: number (required)
+    //   - nmsFailRate: number (required)
+    //   - avgLag: number (required)
+    //   - badStations: list of strings (required)
+    //   - userId: string (required)
+    //   - notes: string (optional)
+    //   - status: string (optional, enum: Pending, Resolved)
+    //   - isFlagged: boolean (optional)
+    //
+    // Collection: /station_history/{historyId}
+    // Fields:
+    //   - stationId: string (required)
+    //   - date: string (required, ISO 8601)
+    //   - locoId: string (required)
+    //   - percentage: number (required)
+    //   - received: number (required)
+    //   - expected: number (required)
+    //   - userId: string (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string &&
+        dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['locoId', 'date', 'overallPerformance', 'nmsFailRate', 'avgLag', 'badStations', 'userId']) &&
+        data.locoId is string && data.locoId.size() > 0 &&
+        isValidDateString(data.date) &&
+        data.overallPerformance is number &&
+        data.nmsFailRate is number &&
+        data.avgLag is number &&
+        data.badStations is list &&
+        data.userId == request.auth.uid &&
+        (!('notes' in data) || data.notes is string) &&
+        (!('status' in data) || data.status in ['Pending', 'Resolved']) &&
+        (!('isFlagged' in data) || data.isFlagged is bool);
+    }
+
+    function isValidStationHistory(data) {
+      return data.keys().hasAll(['stationId', 'date', 'locoId', 'percentage', 'received', 'expected', 'userId']) &&
+        data.stationId is string && data.stationId.size() > 0 &&
+        isValidDateString(data.date) &&
+        data.locoId is string && data.locoId.size() > 0 &&
+        data.percentage is number &&
+        data.received is number &&
+        data.expected is number &&
+        data.userId == request.auth.uid;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /reports/{reportId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && isValidReport(request.resource.data);
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && isValidReport(request.resource.data);
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    match /station_history/{historyId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && isValidStationHistory(request.resource.data);
+      allow update, delete: if false; // History is immutable
+    }
+  }
+}
