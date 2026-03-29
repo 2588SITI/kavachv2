@@ -494,10 +494,11 @@ export default function App() {
       bodyY = writeText(techNote, bodyY + 2, 9);
 
       // Footer - Dynamic placement
-      bodyY += 15;
-      if (bodyY > 240) {
+      bodyY += 10;
+      // Threshold increased to 260 to allow more content on the same page
+      if (bodyY > 260) {
         doc.addPage();
-        bodyY = 30;
+        bodyY = 25;
       }
       
       doc.setFontSize(10);
@@ -505,7 +506,7 @@ export default function App() {
       doc.setFont('helvetica', 'normal');
       bodyY = writeText('This is a computer-generated technical analysis based on uploaded Kavach diagnostic logs.', bodyY);
       
-      bodyY += 20;
+      bodyY += 15;
       doc.setTextColor(0);
       doc.setFont('helvetica', 'normal');
       doc.text('Yours Sincerely,', 140, bodyY);
