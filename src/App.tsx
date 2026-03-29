@@ -100,7 +100,8 @@ export default function App() {
       await signIn();
     } catch (error: any) {
       console.error("Login Error:", error);
-      setLoginError(error.message || "Failed to login. Please ensure popups are allowed or try opening the app in a new tab.");
+      const currentOrigin = window.location.origin;
+      setLoginError(`${error.message || "Failed to login."} (Current Origin: ${currentOrigin}). Please ensure this domain is added to your Firebase Authorized Domains.`);
     } finally {
       setIsLoggingIn(false);
     }
