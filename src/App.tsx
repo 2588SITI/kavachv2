@@ -90,6 +90,29 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedStation, setSelectedStation] = useState<string>('All');
   const [selectedLoco, setSelectedLoco] = useState<string>('All');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+
+  const handleLogin = async () => {
+    setIsLoggingIn(true);
+    setLoginError(null);
+    try {
+      await signIn();
+    } catch (error: any) {
+      console.error("Login Error:", error);
+      setLoginError(error.message || "Failed to login. Please ensure popups are allowed or try opening the app in a new tab.");
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut();
+    } catch (error) {
+      console.error("Logout Error:", error);
+    }
+  };
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -648,12 +671,26 @@ export default function App() {
         {/* User Profile */}
         <div className="bg-white/5 p-4 rounded-xl border border-white/10 backdrop-blur-sm">
           {!user ? (
-            <button 
-              onClick={signIn}
-              className="w-full py-2 bg-emerald-500 hover:bg-emerald-400 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all"
-            >
-              <LogIn className="w-3 h-3" /> Login to Save History
-            </button>
+            <div className="space-y-2">
+              <button 
+                onClick={handleLogin}
+                disabled={isLoggingIn}
+                className={cn(
+                  "w-full py-2 bg-emerald-500 hover:bg-emerald-400 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all",
+                  isLoggingIn && "opacity-50 cursor-not-allowed"
+                )}
+              >
+                {isLoggingIn ? (
+                  <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <LogIn className="w-3 h-3" />
+                )}
+                {isLoggingIn ? "Logging in..." : "Login to Save History"}
+              </button>
+              {loginError && (
+                <p className="text-[10px] text-rose-400 font-medium leading-tight">{loginError}</p>
+              )}
+            </div>
           ) : (
             <div className="space-y-3">
               <div className="flex items-center gap-3">
@@ -664,7 +701,7 @@ export default function App() {
                 </div>
               </div>
               <button 
-                onClick={signOut}
+                onClick={handleLogout}
                 className="w-full py-1.5 bg-white/5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 rounded-lg text-[10px] font-bold flex items-center justify-center gap-2 transition-all border border-white/5 hover:border-rose-500/20"
               >
                 <LogOut className="w-3 h-3" /> Logout
@@ -703,7 +740,7 @@ export default function App() {
                   </div>
                 </div>
                 <button 
-                  onClick={signOut}
+                  onClick={handleLogout}
                   className="w-full py-2 flex items-center justify-center gap-2 text-xs font-bold text-slate-400 hover:text-rose-400 transition-all border border-white/5 hover:border-rose-500/30 rounded-lg"
                 >
                   <LogOut className="w-3 h-3" /> Logout
@@ -714,11 +751,23 @@ export default function App() {
                 <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">Cloud Storage</p>
                 <p className="text-xs text-slate-300">Login to save analysis history and track station performance over time.</p>
                 <button 
-                  onClick={signIn}
-                  className="w-full py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl border border-white/10 transition-all text-xs font-bold flex items-center justify-center gap-2"
+                  onClick={handleLogin}
+                  disabled={isLoggingIn}
+                  className={cn(
+                    "w-full py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl border border-white/10 transition-all text-xs font-bold flex items-center justify-center gap-2",
+                    isLoggingIn && "opacity-50 cursor-not-allowed"
+                  )}
                 >
-                  <LogIn className="w-3 h-3 text-emerald-400" /> Login with Google
+                  {isLoggingIn ? (
+                    <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <LogIn className="w-3 h-3 text-emerald-400" />
+                  )}
+                  {isLoggingIn ? "Logging in..." : "Login with Google"}
                 </button>
+                {loginError && (
+                  <p className="text-[10px] text-rose-400 font-medium leading-tight">{loginError}</p>
+                )}
               </div>
             )
           ) : (
@@ -857,7 +906,14 @@ export default function App() {
             {activeTab === 'nms' && filteredStats && <NMSAnalysis stats={filteredStats} />}
             {activeTab === 'sync' && filteredStats && <SyncAnalysis stats={filteredStats} />}
             {activeTab === 'interval' && filteredStats && <IntervalAnalysis stats={filteredStats} />}
-            {activeTab === 'history' && <HistoryView user={user} />}
+            {activeTab === 'history' && (
+              <HistoryView 
+                user={user} 
+                handleLogin={handleLogin} 
+                isLoggingIn={isLoggingIn} 
+                loginError={loginError} 
+              />
+            )}
           </div>
         )}
       </main>
@@ -1643,7 +1699,17 @@ function DeepMapping({ stats, files }: { stats: DashboardStats; files: { rf: Fil
   );
 }
 
-function HistoryView({ user }: { user: User | null }) {
+function HistoryView({ 
+  user, 
+  handleLogin, 
+  isLoggingIn, 
+  loginError 
+}: { 
+  user: User | null; 
+  handleLogin: () => Promise<void>; 
+  isLoggingIn: boolean; 
+  loginError: string | null; 
+}) {
   const [reports, setReports] = useState<any[]>([]);
   const [stationHistory, setStationHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1736,11 +1802,23 @@ function HistoryView({ user }: { user: User | null }) {
           <p className="text-slate-400 max-w-sm">Please login with your Google account to view and save analysis history.</p>
         </div>
         <button 
-          onClick={signIn}
-          className="px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-white rounded-xl font-bold transition-all shadow-lg shadow-emerald-500/20 flex items-center gap-2"
+          onClick={handleLogin}
+          disabled={isLoggingIn}
+          className={cn(
+            "px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-white rounded-xl font-bold transition-all shadow-lg shadow-emerald-500/20 flex items-center gap-2",
+            isLoggingIn && "opacity-50 cursor-not-allowed"
+          )}
         >
-          <LogIn className="w-4 h-4" /> Login with Google
+          {isLoggingIn ? (
+            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+          ) : (
+            <LogIn className="w-4 h-4" />
+          )}
+          {isLoggingIn ? "Logging in..." : "Login with Google"}
         </button>
+        {loginError && (
+          <p className="text-sm text-rose-400 font-medium max-w-sm">{loginError}</p>
+        )}
       </div>
     );
   }
