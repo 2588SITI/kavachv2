@@ -52,23 +52,109 @@ export default function App() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [activeTab, setActiveTab] = useState('summary');
   const [tagSearch, setTagSearch] = useState('');
+  const [selectedStation, setSelectedStation] = useState<string>('All');
+  const [selectedLoco, setSelectedLoco] = useState<string>('All');
 
   const handleFileUpload = async (type: keyof typeof files, file: File) => {
     setFiles((prev) => ({ ...prev, [type]: file }));
   };
 
   const analyzeData = async () => {
-    if (!files.rf || !files.radio) return;
-    const rf = await parseFile(files.rf);
+    const fileCount = [files.rf, files.trn, files.radio].filter(f => f !== null).length;
+    if (fileCount < 2) return;
+    
+    const rf = files.rf ? await parseFile(files.rf) : [];
     const trn = files.trn ? await parseFile(files.trn) : null;
-    const radio = await parseFile(files.radio);
+    const radio = files.radio ? await parseFile(files.radio) : [];
     const processed = processDashboardData(rf, trn, radio);
     setStats(processed);
+    setSelectedStation('All');
+    setSelectedLoco('All');
   };
+
+  const getFilteredStats = (): DashboardStats | null => {
+    if (!stats) return null;
+    
+    let filtered = { ...stats };
+
+    if (selectedLoco !== 'All') {
+      filtered.stationStats = filtered.stationStats.filter(s => String(s.locoId) === selectedLoco);
+      filtered.stnPerf = filtered.stnPerf.filter(s => String(s.locoId) === selectedLoco);
+      filtered.tagLinkIssues = filtered.tagLinkIssues.filter(t => String(t.locoId) === selectedLoco);
+      filtered.uniqueTrainLengths = filtered.uniqueTrainLengths.filter(t => String(t.locoId) === selectedLoco);
+      filtered.trainConfigChanges = filtered.trainConfigChanges.filter(t => String(t.locoId) === selectedLoco);
+      filtered.modeDegradations = filtered.modeDegradations.filter(m => String(m.locoId) === selectedLoco);
+      filtered.brakeApplications = filtered.brakeApplications.filter(b => String(b.locoId) === selectedLoco);
+      filtered.signalOverrides = filtered.signalOverrides.filter(s => String(s.locoId) === selectedLoco);
+      filtered.sosEvents = filtered.sosEvents.filter(s => String(s.locoId) === selectedLoco);
+      filtered.maPackets = filtered.maPackets.filter(p => String(p.locoId) === selectedLoco);
+      filtered.shortPackets = filtered.shortPackets.filter(p => String(p.locoId) === selectedLoco);
+      filtered.nmsLogs = filtered.nmsLogs.filter(n => String(n.locoId) === selectedLoco);
+      
+      // Update primary locoId for display
+      filtered.locoId = selectedLoco;
+
+      // Recalculate loco performance for the specific loco
+      if (filtered.stationStats.length > 0) {
+        filtered.locoPerformance = filtered.stationStats.reduce((acc, s) => acc + s.percentage, 0) / filtered.stationStats.length;
+        filtered.badStns = filtered.stationStats.filter(s => s.percentage < 95).map(s => s.stationId);
+        filtered.goodStns = filtered.stationStats.filter(s => s.percentage >= 95).map(s => s.stationId);
+      }
+
+      // Recalculate Radio Lag
+      if (filtered.maPackets.length > 0) {
+        filtered.avgLag = filtered.maPackets.reduce((acc, p) => acc + p.delay, 0) / filtered.maPackets.length;
+      } else {
+        filtered.avgLag = 0;
+      }
+
+      // Recalculate NMS Status and Fail Rate
+      if (filtered.nmsLogs.length > 0) {
+        const nmsMap: Record<string, number> = {};
+        filtered.nmsLogs.forEach(n => {
+          nmsMap[n.health] = (nmsMap[n.health] || 0) + 1;
+        });
+        filtered.nmsStatus = Object.entries(nmsMap).map(([name, value]) => ({ name, value }));
+        filtered.nmsFailRate = (filtered.nmsLogs.filter(n => n.health !== '32').length / filtered.nmsLogs.length) * 100;
+      } else {
+        filtered.nmsStatus = [];
+        filtered.nmsFailRate = 0;
+      }
+    } else {
+      filtered.locoId = 'All Locos';
+    }
+
+    if (selectedStation !== 'All') {
+      filtered.stationStats = filtered.stationStats.filter(s => String(s.stationId) === selectedStation);
+      filtered.stnPerf = filtered.stnPerf.filter(s => String(s.stationId) === selectedStation);
+      filtered.tagLinkIssues = filtered.tagLinkIssues.filter(t => String(t.stationId) === selectedStation);
+      filtered.uniqueTrainLengths = filtered.uniqueTrainLengths.filter(t => String(t.stationId) === selectedStation);
+      filtered.trainConfigChanges = filtered.trainConfigChanges.filter(t => String(t.stationId) === selectedStation);
+      filtered.modeDegradations = filtered.modeDegradations.filter(m => String(m.stationId) === selectedStation);
+      filtered.brakeApplications = filtered.brakeApplications.filter(b => String(b.stationId) === selectedStation);
+      filtered.signalOverrides = filtered.signalOverrides.filter(s => String(s.stationId) === selectedStation);
+      filtered.sosEvents = filtered.sosEvents.filter(s => String(s.stationId) === selectedStation);
+      
+      // Recalculate loco performance for the specific station
+      if (filtered.stationStats.length > 0) {
+        filtered.locoPerformance = filtered.stationStats.reduce((acc, s) => acc + s.percentage, 0) / filtered.stationStats.length;
+      }
+    }
+
+    return filtered;
+  };
+
+  const filteredStats = getFilteredStats();
+  const uniqueStations = stats 
+    ? ['All', ...new Set(stats.stationStats
+        .filter(s => selectedLoco === 'All' || String(s.locoId) === selectedLoco)
+        .map(s => String(s.stationId)))] 
+    : ['All'];
+  const uniqueLocos = stats ? ['All', ...new Set(stats.locoIds.map(id => String(id)))] : ['All'];
 
   const generatePDFReport = () => {
     try {
-      if (!stats) {
+      if (!filteredStats) {
         console.error("No stats available for report");
         return;
       }
@@ -89,28 +175,31 @@ export default function App() {
       // Loco Info
       doc.setFontSize(14);
       doc.setTextColor(0);
-      doc.text(`Loco ID: ${stats.locoId}`, 20, 45);
+      doc.text(`Loco ID: ${filteredStats.locoId}`, 20, 45);
       doc.text(`Mentored by: CELE Sir`, 20, 52);
+      if (selectedStation !== 'All') {
+        doc.text(`Filtered Station: ${selectedStation}`, 20, 59);
+      }
 
       // Executive Summary
       doc.setFontSize(16);
       doc.setTextColor(0, 102, 204);
-      doc.text('1. Executive Summary', 20, 65);
+      doc.text('1. Executive Summary', 20, 75);
       doc.setFontSize(11);
       doc.setTextColor(0);
-      doc.text(`Overall Loco Performance: ${stats.locoPerformance.toFixed(2)}%`, 25, 75);
-      doc.text(`NMS Failure Rate: ${stats.nmsFailRate.toFixed(2)}%`, 25, 82);
-      doc.text(`Average MA Refresh Lag: ${stats.avgLag.toFixed(2)}s`, 25, 89);
+      doc.text(`Overall Loco Performance: ${filteredStats.locoPerformance.toFixed(2)}%`, 25, 85);
+      doc.text(`NMS Failure Rate: ${filteredStats.nmsFailRate.toFixed(2)}%`, 25, 92);
+      doc.text(`Average MA Refresh Lag: ${filteredStats.avgLag.toFixed(2)}s`, 25, 99);
 
-      let currentY = 100;
+      let currentY = 110;
 
       // Tag Issues Table
-      if (stats.tagLinkIssues.length > 0) {
+      if (filteredStats.tagLinkIssues.length > 0) {
         doc.setFontSize(16);
         doc.setTextColor(0, 102, 204);
         doc.text('2. Critical Tag Link Issues', 20, currentY);
         
-        const tagRows = stats.tagLinkIssues.map(t => [t.time, t.stationId, t.error, t.info]);
+        const tagRows = filteredStats.tagLinkIssues.map(t => [t.time, t.stationId, t.error, t.info]);
         autoTable(doc, {
           startY: currentY + 5,
           head: [['Time', 'Station ID', 'Error Type', 'Details']],
@@ -130,7 +219,7 @@ export default function App() {
       doc.text('3. Diagnostic Advice & Recommendations', 20, currentY);
       
       let adviceY = currentY + 10;
-      stats.diagnosticAdvice.forEach((advice, index) => {
+      filteredStats.diagnosticAdvice.forEach((advice, index) => {
         if (adviceY > 270) { doc.addPage(); adviceY = 20; }
         doc.setFontSize(11);
         doc.setTextColor(0);
@@ -151,10 +240,277 @@ export default function App() {
       doc.text('Authorized Signature', 140, 277);
       doc.text('Kavach Technical Team', 140, 284);
 
-      doc.save(`Kavach_Report_Loco_${stats.locoId}.pdf`);
+      doc.save(`Kavach_Report_Loco_${filteredStats.locoId}${selectedStation !== 'All' ? '_Stn_' + selectedStation : ''}.pdf`);
     } catch (error) {
       console.error("PDF Generation Error:", error);
       alert("Report generate karne mein samasya aayi hai. Kripya console check karein.");
+    }
+  };
+
+  const generateFailureLetter = () => {
+    const filteredStats = getFilteredStats();
+    if (!filteredStats) return;
+
+    if (selectedLoco === 'All') {
+      alert("Kripya ek specific Loco ID select karein failure analysis letter ke liye.");
+      return;
+    }
+
+    try {
+      const doc = new jsPDF();
+      const date = new Date().toLocaleDateString();
+      const time = new Date().toLocaleTimeString();
+      const reportId = `KAV/${filteredStats.locoId}/${Math.floor(Math.random() * 10000)}`;
+      
+      // Header
+      doc.setFontSize(18);
+      doc.setTextColor(0);
+      doc.text('KAVACH TECHNICAL OPERATIONS CENTER', 105, 20, { align: 'center' });
+      doc.setFontSize(10);
+      doc.text('Indian Railways - Traction Department', 105, 26, { align: 'center' });
+      doc.line(20, 30, 190, 30);
+
+      // Meta Info
+      doc.setFontSize(10);
+      doc.text(`Date: ${date}`, 150, 38);
+      doc.text(`Time: ${time}`, 150, 43);
+      doc.text(`Report ID: ${reportId}`, 20, 38);
+      doc.text(`Loco ID: ${filteredStats.locoId}`, 20, 43);
+
+      const logTimes = filteredStats.maPackets.map(p => p.time).sort();
+      if (logTimes.length > 0) {
+        doc.text(`Log Duration: ${logTimes[0]} to ${logTimes[logTimes.length - 1]}`, 20, 48);
+      }
+
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.text('To,', 20, 55);
+      doc.setFont('helvetica', 'normal');
+      doc.text('The Senior Divisional Electrical Engineer (Rolling Stock),', 20, 62);
+      doc.text('Traction Operations Department.', 20, 68);
+
+      doc.setFont('helvetica', 'bold');
+      doc.text(`Subject: Deep Analysis & Failure Validation - Locomotive ${filteredStats.locoId}`, 20, 80);
+      doc.line(20, 82, 160, 82);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      
+      let bodyY = 92;
+      const writeText = (text: string, y: number, size = 10, isBold = false) => {
+        doc.setFontSize(size);
+        doc.setFont('helvetica', isBold ? 'bold' : 'normal');
+        const lines = doc.splitTextToSize(text, 170);
+        
+        // Page break logic
+        if (y + (lines.length * 5) > 280) {
+          doc.addPage();
+          y = 20;
+        }
+        
+        doc.text(lines, 20, y);
+        return y + (lines.length * 5);
+      };
+
+      bodyY = writeText(`Sir,`, bodyY);
+      bodyY = writeText(`This letter provides a comprehensive technical audit of Locomotive ${filteredStats.locoId} based on real-time diagnostic logs. The analysis evaluates whether the reported system failure is technically justified (Genuine) or based on environmental/external factors (Flimsy).`, bodyY + 5);
+
+      // 1. Technical Metrics Summary
+      bodyY = writeText(`1. TECHNICAL PERFORMANCE METRICS:`, bodyY + 8, 11, true);
+      
+      const metricsData = [
+        ['Metric', 'Value', 'Status'],
+        ['Overall RFCOMM Success', `${filteredStats.locoPerformance.toFixed(2)}%`, filteredStats.locoPerformance >= 95 ? 'Healthy' : 'Sub-optimal'],
+        ['NMS Software Health', `${(100 - filteredStats.nmsFailRate).toFixed(2)}%`, filteredStats.nmsFailRate <= 5 ? 'Healthy' : 'Critical'],
+        ['Avg Radio MA Lag', `${filteredStats.avgLag.toFixed(2)}s`, filteredStats.avgLag <= 1.5 ? 'Normal' : 'High Latency'],
+        ['Critical Tag Link Issues', `${filteredStats.tagLinkIssues.length}`, filteredStats.tagLinkIssues.length === 0 ? 'None' : 'Action Required']
+      ];
+
+      autoTable(doc, {
+        startY: bodyY + 2,
+        head: [metricsData[0]],
+        body: metricsData.slice(1),
+        theme: 'grid',
+        styles: { fontSize: 9 },
+        margin: { left: 20 }
+      });
+      bodyY = (doc as any).lastAutoTable.finalY + 8;
+
+      // 2. Station-wise Performance Analysis
+      bodyY = writeText(`2. STATION-SPECIFIC COMMUNICATION AUDIT:`, bodyY, 11, true);
+      const stnData = filteredStats.stationStats
+        .sort((a, b) => a.percentage - b.percentage)
+        .slice(0, 5)
+        .map(s => [s.stationId, s.direction, `${s.received}/${s.expected}`, `${s.percentage.toFixed(1)}%`]);
+
+      if (stnData.length > 0) {
+        autoTable(doc, {
+          startY: bodyY + 2,
+          head: [['Station ID', 'Direction', 'Packets (R/E)', 'Success %']],
+          body: stnData,
+          theme: 'striped',
+          styles: { fontSize: 8 },
+          margin: { left: 20 }
+        });
+        bodyY = (doc as any).lastAutoTable.finalY + 8;
+      } else {
+        bodyY = writeText(`No specific station communication drops detected.`, bodyY + 2);
+      }
+
+      // 3. Mode Degradation Analysis
+      if (filteredStats.modeDegradations.length > 0) {
+        bodyY = writeText(`3. MODE DEGRADATION AUDIT (TRNMSNMA):`, bodyY, 11, true);
+        autoTable(doc, {
+          startY: bodyY + 2,
+          head: [['Timestamp', 'From', 'To', 'Reason', 'LP Response']],
+          body: filteredStats.modeDegradations.map(d => [d.time, d.from, d.to, d.reason, d.lpResponse]),
+          theme: 'grid',
+          styles: { fontSize: 7 },
+          margin: { left: 20 }
+        });
+        bodyY = (doc as any).lastAutoTable.finalY + 8;
+      }
+
+      // 4. Chronological Event Log (Last 5 Critical Events)
+      const events = [
+        ...filteredStats.modeDegradations.map(e => ({ time: e.time, type: 'DEGRADATION', detail: `${e.from} -> ${e.to} (${e.reason})` })),
+        ...filteredStats.sosEvents.map(e => ({ time: e.time, type: 'SOS', detail: `${e.type} from ${e.source}` })),
+        ...filteredStats.brakeApplications.map(e => ({ time: e.time, type: 'BRAKE', detail: `${e.type} at ${e.speed} km/h` }))
+      ].sort((a, b) => b.time.localeCompare(a.time)).slice(0, 5);
+
+      if (events.length > 0) {
+        bodyY = writeText(`4. RECENT CRITICAL EVENTS LOG:`, bodyY, 11, true);
+        autoTable(doc, {
+          startY: bodyY + 2,
+          head: [['Timestamp', 'Event Type', 'Technical Details']],
+          body: events.map(e => [e.time, e.type, e.detail]),
+          theme: 'grid',
+          styles: { fontSize: 8 },
+          margin: { left: 20 }
+        });
+        bodyY = (doc as any).lastAutoTable.finalY + 8;
+      }
+
+      // 5. Loco Overview Section
+      bodyY = writeText(`5. LOCO OVERVIEW & DATA DURATION:`, bodyY, 11, true);
+      bodyY = writeText(`Locomotive Number: ${filteredStats.locoId}`, bodyY + 2, 10);
+      bodyY = writeText(`Analysis Duration: ${filteredStats.startTime} to ${filteredStats.endTime}`, bodyY + 2, 10);
+      bodyY += 5;
+
+      // 6. Expert Judgment Section (Correlation Logic)
+      // A failure is GENUINE only if Internal Errors (NMS) correlate with External Symptoms (RF/Tags)
+      // OR if there is a sustained Radio Timeout.
+      const hasInternalFault = filteredStats.nmsFailRate > 40;
+      const hasExternalSymptom = filteredStats.locoPerformance < 92 || filteredStats.tagLinkIssues.length > 2;
+      const hasCriticalRadioLag = filteredStats.avgLag > 2.5;
+      
+      const isGenuine = (hasInternalFault && hasExternalSymptom) || hasCriticalRadioLag || (filteredStats.brakeApplications.length > 0 && filteredStats.locoPerformance < 85);
+      
+      const judgment = isGenuine ? "VALIDATED FUNCTIONAL FAILURE (SYSTEMIC)" : "NON-FUNCTIONAL DIAGNOSTIC ANOMALY (TRANSIENT)";
+      const color = isGenuine ? [200, 0, 0] : [0, 150, 0];
+
+      bodyY = writeText(`6. TECHNICAL VALIDATION & LOGICAL PROOF:`, bodyY + 5, 11, true);
+      doc.setTextColor(color[0], color[1], color[2]);
+      bodyY = writeText(`FINAL DECISION: ${judgment}`, bodyY + 2, 11, true);
+      doc.setTextColor(0);
+
+      let reasoning = "";
+      if (isGenuine) {
+        reasoning = `TECHNICAL VALIDATION: The failure is classified as FUNCTIONAL due to CORRELATION. `;
+        if (hasInternalFault && hasExternalSymptom) {
+          reasoning += `The system shows both Internal NMS instability (${filteredStats.nmsFailRate.toFixed(1)}%) AND External performance degradation (RF: ${filteredStats.locoPerformance.toFixed(1)}%). This proves that the NMS errors are not just 'noise' but are actively causing communication drops or hardware malfunctions. `;
+        } else if (hasCriticalRadioLag) {
+          reasoning += `The average Radio MA lag of ${filteredStats.avgLag.toFixed(2)}s exceeds the safety threshold, directly impacting train operation regardless of NMS status. `;
+        }
+        
+        // Multi-Loco Station Proof
+        if (filteredStats.multiLocoBadStns.length > 0) {
+          const conciseStnList = filteredStats.multiLocoBadStns.map(s => {
+            const ids = s.locoDetails.map(d => d.id).join(', ');
+            return `Stn ${s.stationId} (Locos: ${ids})`;
+          }).join('; ');
+          
+          const detailedStnList = filteredStats.multiLocoBadStns.map(s => {
+            const details = s.locoDetails.map(d => `${d.id}: ${d.perf.toFixed(1)}% [${d.startTime} - ${d.endTime}]`).join(', ');
+            return `Stn ${s.stationId} (Locos: ${details})`;
+          }).join('; ');
+          
+          reasoning += `LOGICAL PROOF: The failure is marked as GENUINE. The performance drops are observed at [${conciseStnList}] across multiple locomotives. Since multiple locos are failing at the same spot, the fault lies with the Station TCAS equipment. The locomotive unit under analysis is performing normally elsewhere. \n\nDetailed Performance Audit: [${detailedStnList}]. `;
+        }
+        
+        reasoning += `This confirms a hardware/software defect in the Loco Kavach Unit, but also highlights track-side infrastructure issues.`;
+      } else {
+        reasoning = `TECHNICAL VALIDATION: The failure is classified as NON-FUNCTIONAL/TRANSIENT. `;
+        
+        // Multi-Loco Station Proof for Flimsy Grounds
+        if (filteredStats.multiLocoBadStns.length > 0) {
+          const conciseStnList = filteredStats.multiLocoBadStns.map(s => {
+            const ids = s.locoDetails.map(d => d.id).join(', ');
+            return `Stn ${s.stationId} (Locos: ${ids})`;
+          }).join('; ');
+          
+          const detailedStnList = filteredStats.multiLocoBadStns.map(s => {
+            const details = s.locoDetails.map(d => `${d.id}: ${d.perf.toFixed(1)}% [${d.startTime} - ${d.endTime}]`).join(', ');
+            return `Stn ${s.stationId} (Locos: ${details})`;
+          }).join('; ');
+          
+          reasoning += `LOGICAL PROOF: The failure is marked as FLIMSY/WRONG. The performance drops are observed at [${conciseStnList}] across multiple locomotives. Since multiple locos are failing at the same spot, the fault lies with the Station TCAS equipment. The locomotive unit under analysis is performing normally elsewhere. \n\nDetailed Performance Audit: [${detailedStnList}]. `;
+        } else if (hasInternalFault && !hasExternalSymptom) {
+          reasoning += `Although NMS health is reported as sub-optimal (${filteredStats.nmsFailRate.toFixed(1)}% non-32 codes), the RFCOMM performance is stable at ${filteredStats.locoPerformance.toFixed(2)}% with 0 Tag issues. This indicates that the NMS codes are 'Transient' or 'Informational' and do not constitute a functional failure. `;
+        } else if (filteredStats.badStns.length > 0 && filteredStats.badStns.length <= 2) {
+          reasoning += `The performance drops are highly localized to Stn ${filteredStats.badStns.join(', ')}, proving that the issue is Track-side (RFID/Signal) and the Locomotive unit is healthy. `;
+        }
+        reasoning += `The locomotive is technically fit for operation.`;
+      }
+      bodyY = writeText(reasoning, bodyY + 2);
+
+      // Recommendation
+      bodyY = writeText(`7. RECOMMENDATION:`, bodyY + 8, 11, true);
+      let recommendation = "";
+      if (isGenuine) {
+        if (filteredStats.multiLocoBadStns.length > 0) {
+          const stnIds = filteredStats.multiLocoBadStns.map(s => s.stationId).join(', ');
+          recommendation = `1. URGENT: Inspect Station TCAS/Kavach equipment at Stations [${stnIds}] as multiple locomotives are failing there. 2. Perform a technical audit of the Loco Processing Unit (CPU) and Power Supply Module.`;
+        } else if (filteredStats.nmsFailRate > 50 && filteredStats.badStns.length === 1) {
+          recommendation = `1. Inspect Station Kavach equipment at Stn ${filteredStats.badStns[0]} for CPU/Radio faults. 2. If the problem persists across other stations, replace the Loco Processing Unit (CPU) and check the Power Supply Module.`;
+        } else {
+          recommendation = `Immediate inspection of the Kavach antenna, RF cables, and NMS processing unit is required at the shed. The locomotive should be grounded for a full technical audit and recalibration.`;
+        }
+      } else {
+        if (filteredStats.multiLocoBadStns.length > 0) {
+          const stnIds = filteredStats.multiLocoBadStns.map(s => s.stationId).join(', ');
+          recommendation = `The locomotive is fit for service. The reported communication drops are due to faulty Station-side equipment at [${stnIds}]. URGENT track-side audit is required at these locations.`;
+        } else {
+          recommendation = `The locomotive is fit for service. No hardware replacement is required. It is recommended to audit the track-side Kavach equipment and signal strength at stations [${filteredStats.badStns.join(', ')}] to resolve the localized communication drops.`;
+        }
+      }
+      bodyY = writeText(recommendation, bodyY + 2);
+
+      // Technical Note
+      bodyY = writeText(`7. TECHNICAL NOTE:`, bodyY + 8, 10, true);
+      const techNote = `Please note that while a locomotive may be mechanically 'Fit' and operational for traction, the 'Kavach Failure' status refers specifically to the Electronic Safety System. A high NMS failure rate indicates that the Kavach unit is unable to perform its safety-critical monitoring, which is a mandatory requirement for high-speed operations.`;
+      bodyY = writeText(techNote, bodyY + 2, 9);
+
+      // Footer - Start on a new page like a formal letter closing
+      doc.addPage();
+      let footerY = 30;
+      doc.setFontSize(10);
+      doc.setTextColor(100);
+      doc.setFont('helvetica', 'normal');
+      doc.text('This is a computer-generated technical analysis based on uploaded Kavach diagnostic logs.', 20, footerY);
+      
+      footerY += 30;
+      doc.setTextColor(0);
+      doc.text('Yours Sincerely,', 140, footerY);
+      
+      footerY += 10;
+      doc.setFont('helvetica', 'bold');
+      doc.text('CHIEF LOCO INSPECTOR', 140, footerY);
+
+      doc.save(`Failure_Analysis_Letter_Loco_${filteredStats.locoId}_${date.replace(/\//g, '-')}.pdf`);
+    } catch (error) {
+      console.error("Letter Generation Error:", error);
+      alert("Letter generate karne mein samasya aayi hai.");
     }
   };
 
@@ -188,10 +544,10 @@ export default function App() {
 
           <button
             onClick={analyzeData}
-            disabled={!files.rf || !files.radio}
+            disabled={[files.rf, files.trn, files.radio].filter(f => f !== null).length < 2}
             className={cn(
               "w-full py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-lg",
-              files.rf && files.radio 
+              [files.rf, files.trn, files.radio].filter(f => f !== null).length >= 2 
                 ? "bg-emerald-500 hover:bg-emerald-400 text-white shadow-emerald-500/20" 
                 : "bg-white/5 text-slate-500 cursor-not-allowed border border-white/5"
             )}
@@ -219,38 +575,94 @@ export default function App() {
         ) : (
           <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
             {/* Header */}
-            <div className="flex justify-between items-end">
-              <div className="flex items-end gap-6">
-                <div>
-                  <p className="text-emerald-400 font-bold text-sm tracking-widest uppercase mb-1">Diagnostic Report</p>
-                  <h2 className="text-4xl font-bold text-white tracking-tight">Loco {stats.locoId}</h2>
+            <div className="flex flex-col gap-6">
+              <div className="flex justify-between items-end">
+                <div className="flex items-end gap-6">
+                  <div>
+                    <p className="text-emerald-400 font-bold text-sm tracking-widest uppercase mb-1">Diagnostic Report</p>
+                    <h2 className="text-4xl font-bold text-white tracking-tight">Loco {stats.locoId}</h2>
+                  </div>
+                    <button 
+                      onClick={generatePDFReport}
+                      className="mb-1 flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl border border-white/10 transition-all text-sm font-bold"
+                    >
+                      <Download className="w-4 h-4 text-emerald-400" />
+                      Download Official Report
+                    </button>
+                    <button 
+                      onClick={generateFailureLetter}
+                      className={cn(
+                        "mb-1 flex items-center gap-2 px-4 py-2 rounded-xl border transition-all text-sm font-bold",
+                        selectedLoco === 'All' 
+                          ? "bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border-amber-500/30"
+                          : "bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border-emerald-500/30"
+                      )}
+                    >
+                      <FileText className="w-4 h-4" />
+                      {selectedLoco === 'All' ? 'Select Loco for Failure Letter' : 'Download Failure Analysis Letter'}
+                    </button>
+                  </div>
+                <div className="flex gap-1 p-1 glass-card rounded-xl overflow-x-auto max-w-3xl">
+                  <TabButton active={activeTab === 'summary'} onClick={() => setActiveTab('summary')} label="Summary" />
+                  <TabButton active={activeTab === 'mapping'} onClick={() => setActiveTab('mapping')} label="Mapping" />
+                  <TabButton active={activeTab === 'station'} onClick={() => setActiveTab('station')} label="Station Analysis" />
+                  <TabButton active={activeTab === 'expert'} onClick={() => setActiveTab('expert')} label="Expert Diagnostics" />
+                  <TabButton active={activeTab === 'nms'} onClick={() => setActiveTab('nms')} label="NMS" />
+                  <TabButton active={activeTab === 'sync'} onClick={() => setActiveTab('sync')} label="Sync" />
+                  <TabButton active={activeTab === 'interval'} onClick={() => setActiveTab('interval')} label="Interval" />
                 </div>
-                <button 
-                  onClick={generatePDFReport}
-                  className="mb-1 flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl border border-white/10 transition-all text-sm font-bold"
-                >
-                  <Download className="w-4 h-4 text-emerald-400" />
-                  Download Official Report
-                </button>
               </div>
-              <div className="flex gap-1 p-1 glass-card rounded-xl overflow-x-auto max-w-3xl">
-                <TabButton active={activeTab === 'summary'} onClick={() => setActiveTab('summary')} label="Summary" />
-                <TabButton active={activeTab === 'mapping'} onClick={() => setActiveTab('mapping')} label="Mapping" />
-                <TabButton active={activeTab === 'station'} onClick={() => setActiveTab('station')} label="Station Analysis" />
-                <TabButton active={activeTab === 'expert'} onClick={() => setActiveTab('expert')} label="Expert Diagnostics" />
-                <TabButton active={activeTab === 'nms'} onClick={() => setActiveTab('nms')} label="NMS" />
-                <TabButton active={activeTab === 'sync'} onClick={() => setActiveTab('sync')} label="Sync" />
-                <TabButton active={activeTab === 'interval'} onClick={() => setActiveTab('interval')} label="Interval" />
+
+              {/* Filters */}
+              <div className="flex gap-4 p-4 glass-card rounded-2xl border border-white/5">
+                <div className="flex-1 space-y-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                    <MapPin className="w-3 h-3" /> Filter by Station
+                  </label>
+                  <select 
+                    value={selectedStation}
+                    onChange={(e) => setSelectedStation(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-all"
+                  >
+                    {uniqueStations.map(stn => (
+                      <option key={stn} value={stn} className="bg-slate-900">{stn}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex-1 space-y-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                    <Shield className="w-3 h-3" /> Filter by Loco
+                  </label>
+                  <select 
+                    value={selectedLoco}
+                    onChange={(e) => setSelectedLoco(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-all"
+                  >
+                    {uniqueLocos.map(loco => (
+                      <option key={loco} value={loco} className="bg-slate-900">{loco}</option>
+                    ))}
+                  </select>
+                </div>
+                { (selectedStation !== 'All' || selectedLoco !== 'All') && (
+                  <div className="flex items-end">
+                    <button 
+                      onClick={() => { setSelectedStation('All'); setSelectedLoco('All'); }}
+                      className="px-4 py-2 bg-rose-500/20 text-rose-400 rounded-xl border border-rose-500/20 text-xs font-bold hover:bg-rose-500/30 transition-all"
+                    >
+                      Reset Filters
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
-            {activeTab === 'summary' && <ExecutiveSummary stats={stats} />}
-            {activeTab === 'mapping' && <DeepMapping stats={stats} files={files} />}
-            {activeTab === 'station' && <StationAnalysis stats={stats} />}
-            {activeTab === 'expert' && <ExpertDiagnostics stats={stats} tagSearch={tagSearch} setTagSearch={setTagSearch} />}
-            {activeTab === 'nms' && <NMSAnalysis stats={stats} />}
-            {activeTab === 'sync' && <SyncAnalysis stats={stats} />}
-            {activeTab === 'interval' && <IntervalAnalysis stats={stats} />}
+            {activeTab === 'summary' && filteredStats && <ExecutiveSummary stats={filteredStats} />}
+            {activeTab === 'mapping' && filteredStats && <DeepMapping stats={filteredStats} files={files} />}
+            {activeTab === 'station' && filteredStats && <StationAnalysis stats={filteredStats} />}
+            {activeTab === 'expert' && filteredStats && <ExpertDiagnostics stats={filteredStats} tagSearch={tagSearch} setTagSearch={setTagSearch} />}
+            {activeTab === 'nms' && filteredStats && <NMSAnalysis stats={filteredStats} />}
+            {activeTab === 'sync' && filteredStats && <SyncAnalysis stats={filteredStats} />}
+            {activeTab === 'interval' && filteredStats && <IntervalAnalysis stats={filteredStats} />}
           </div>
         )}
       </main>
@@ -345,6 +757,7 @@ function StationAnalysis({ stats }: { stats: DashboardStats }) {
           <table className="w-full text-left text-sm">
             <thead className="text-slate-500 uppercase text-[10px] font-bold border-b border-white/5">
               <tr>
+                <th className="pb-3 px-4">Loco ID</th>
                 <th className="pb-3 px-4">Station ID</th>
                 <th className="pb-3 px-4">Direction</th>
                 <th className="pb-3 px-4">Expected</th>
@@ -355,6 +768,7 @@ function StationAnalysis({ stats }: { stats: DashboardStats }) {
             <tbody className="text-slate-300">
               {stats.stationStats.map((s, i) => (
                 <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                  <td className="py-3 px-4 font-mono text-emerald-400">{s.locoId}</td>
                   <td className="py-3 px-4 font-bold text-white">{s.stationId}</td>
                   <td className="py-3 px-4">
                     <span className={cn(
@@ -857,6 +1271,7 @@ function ExecutiveSummary({ stats }: { stats: DashboardStats }) {
           <StatusBox 
             title="1. Hardware Analysis"
             items={[
+              { label: "Locomotives Analyzed", status: "Healthy", reason: `Total ${stats.locoIds.length} unique locomotives identified: ${stats.locoIds.join(', ')}.` },
               { label: `Loco ${stats.locoId} Performance`, status: stats.locoPerformance >= 98 ? "Healthy" : "Marginal", reason: `Loco ${stats.locoId} achieved ${stats.locoPerformance.toFixed(1)}% performance across all stations.` },
               { label: "Station Hardware", status: stats.badStns.length > 0 ? "Marginal" : "Healthy", reason: stats.badStns.length > 0 ? `Significant drops detected at ${stats.badStns.join(', ')}.` : "All stations performing optimally." }
             ]}

@@ -23,7 +23,8 @@ export interface RadioData {
 
 export interface DashboardStats {
   locoId: string | number;
-  stnPerf: { stationId: string | number; percentage: number }[];
+  locoIds: (string | number)[];
+  stnPerf: { stationId: string | number; percentage: number; locoId: string | number }[];
   badStns: (string | number)[];
   goodStns: (string | number)[];
   locoPerformance: number;
@@ -31,8 +32,9 @@ export interface DashboardStats {
   maCount: number;
   nmsFailRate: number;
   avgLag: number;
-  maPackets: { time: string; delay: number; category: string; length: number }[];
+  maPackets: { time: string; delay: number; category: string; length: number; locoId: string | number }[];
   nmsStatus: { name: string; value: number }[];
+  nmsLogs: { time: string; health: string; locoId: string | number }[];
   intervalDist: { category: string; percentage: number }[];
   diagnosticAdvice: { title: string; detail: string; action: string; severity: 'high' | 'medium' | 'low' }[];
   
@@ -43,15 +45,24 @@ export interface DashboardStats {
     expected: number; 
     received: number; 
     percentage: number;
+    locoId: string | number;
   }[];
-  modeDegradations: { time: string; from: string; to: string; reason: string; lpResponse: string }[];
-  shortPackets: { time: string; type: string; length: number }[];
-  brakeApplications: { time: string; type: string; speed: number; location: string }[];
-  signalOverrides: { time: string; signalId: string; status: string }[];
-  sosEvents: { time: string; source: string; type: string }[];
-  trainConfigChanges: { time: string; parameter: string; oldVal: string; newVal: string; stationId: string }[];
-  uniqueTrainLengths: { length: number; time: string; stationId: string }[];
-  tagLinkIssues: { time: string; stationId: string; info: string; error: string }[];
+  modeDegradations: { time: string; from: string; to: string; reason: string; lpResponse: string; stationId: string; locoId: string | number }[];
+  shortPackets: { time: string; type: string; length: number; locoId: string | number }[];
+  brakeApplications: { time: string; type: string; speed: number; location: string; stationId: string; locoId: string | number }[];
+  signalOverrides: { time: string; signalId: string; status: string; stationId: string; locoId: string | number }[];
+  sosEvents: { time: string; source: string; type: string; stationId: string; locoId: string | number }[];
+  trainConfigChanges: { time: string; parameter: string; oldVal: string; newVal: string; stationId: string; locoId: string | number }[];
+  uniqueTrainLengths: { length: number; time: string; stationId: string; locoId: string | number }[];
+  tagLinkIssues: { time: string; stationId: string; info: string; error: string; locoId: string | number }[];
+  multiLocoBadStns: { 
+    stationId: string | number; 
+    locoCount: number; 
+    avgPerf: number; 
+    locoDetails: { id: string | number; perf: number; startTime: string; endTime: string }[] 
+  }[];
+  startTime: string;
+  endTime: string;
 }
 
 export const bucketDelay = (d: number) => {
