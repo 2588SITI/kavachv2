@@ -265,9 +265,6 @@ export default function App() {
       // Header
       doc.setFontSize(18);
       doc.setTextColor(0);
-      doc.text('KAVACH TECHNICAL OPERATIONS CENTER', 105, 20, { align: 'center' });
-      doc.setFontSize(10);
-      doc.text('Indian Railways - Traction Department', 105, 26, { align: 'center' });
       doc.line(20, 30, 190, 30);
 
       // Meta Info
@@ -302,14 +299,19 @@ export default function App() {
         doc.setFont('helvetica', isBold ? 'bold' : 'normal');
         const lines = doc.splitTextToSize(text, 170);
         
-        // Page break logic
-        if (y + (lines.length * 5) > 280) {
-          doc.addPage();
-          y = 20;
-        }
+        let currentY = y;
+        lines.forEach((line: string) => {
+          if (currentY > 280) {
+            doc.addPage();
+            currentY = 20;
+            doc.setFontSize(size);
+            doc.setFont('helvetica', isBold ? 'bold' : 'normal');
+          }
+          doc.text(line, 20, currentY);
+          currentY += 5;
+        });
         
-        doc.text(lines, 20, y);
-        return y + (lines.length * 5);
+        return currentY;
       };
 
       bodyY = writeText(`Sir,`, bodyY);
@@ -491,21 +493,26 @@ export default function App() {
       const techNote = `Please note that while a locomotive may be mechanically 'Fit' and operational for traction, the 'Kavach Failure' status refers specifically to the Electronic Safety System. A high NMS failure rate indicates that the Kavach unit is unable to perform its safety-critical monitoring, which is a mandatory requirement for high-speed operations.`;
       bodyY = writeText(techNote, bodyY + 2, 9);
 
-      // Footer - Start on a new page like a formal letter closing
-      doc.addPage();
-      let footerY = 30;
+      // Footer - Dynamic placement
+      bodyY += 15;
+      if (bodyY > 240) {
+        doc.addPage();
+        bodyY = 30;
+      }
+      
       doc.setFontSize(10);
       doc.setTextColor(100);
       doc.setFont('helvetica', 'normal');
-      doc.text('This is a computer-generated technical analysis based on uploaded Kavach diagnostic logs.', 20, footerY);
+      bodyY = writeText('This is a computer-generated technical analysis based on uploaded Kavach diagnostic logs.', bodyY);
       
-      footerY += 30;
+      bodyY += 20;
       doc.setTextColor(0);
-      doc.text('Yours Sincerely,', 140, footerY);
+      doc.setFont('helvetica', 'normal');
+      doc.text('Yours Sincerely,', 140, bodyY);
       
-      footerY += 10;
+      bodyY += 8;
       doc.setFont('helvetica', 'bold');
-      doc.text('CHIEF LOCO INSPECTOR', 140, footerY);
+      doc.text('CHIEF LOCO INSPECTOR', 140, bodyY);
 
       doc.save(`Failure_Analysis_Letter_Loco_${filteredStats.locoId}_${date.replace(/\//g, '-')}.pdf`);
     } catch (error) {
