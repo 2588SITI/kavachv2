@@ -32,7 +32,6 @@ import {
   Flag,
   MessageSquare,
   Radio,
-  Check,
   X
 } from 'lucide-react';
 import { 
@@ -130,8 +129,6 @@ class ErrorBoundary extends Component<any, any> {
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [saveSuccess, setSaveSuccess] = useState(false);
   const [files, setFiles] = useState<{ rf: File[]; trn: File[]; radio: File[] }>({
     rf: [],
     trn: [],
@@ -247,14 +244,9 @@ export default function App() {
   };
 
   const saveAnalysisToHistory = async (processedStats: DashboardStats, currentFiles: { rf: File[]; trn: File[]; radio: File[] }) => {
-    if (!user) {
-      setSaveError("You must be logged in to save analysis to history.");
-      return;
-    }
+    if (!user) return;
     
     setIsSaving(true);
-    setSaveError(null);
-    setSaveSuccess(false);
     const path = 'reports';
     try {
       // Try to use the date from the file if available, otherwise fallback to current time
@@ -266,12 +258,6 @@ export default function App() {
       
       // Truncate large data to avoid Firestore 1MB limit
       const truncated = truncateStats(processedStats);
-      const fullDataStr = JSON.stringify(truncated);
-      console.log("Saving report with data size:", (fullDataStr.length / 1024).toFixed(2), "KB");
-      
-      if (fullDataStr.length > 900000) {
-        console.warn("Report data is very large, approaching Firestore 1MB limit.");
-      }
       
       // Upload original files to Firebase Storage
       const fileUploads: { name: string; url: string; type: string }[] = [];
@@ -325,7 +311,7 @@ export default function App() {
         notes: "",
         status: "Pending",
         isFlagged: false,
-        fullData: fullDataStr,
+        fullData: JSON.stringify(truncated),
         originalFiles: fileUploads
       });
 
@@ -344,11 +330,8 @@ export default function App() {
 
       await Promise.all(stationHistoryPromises);
       console.log("Analysis saved to history successfully with files:", fileUploads.length);
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 5000);
-    } catch (error: any) {
+    } catch (error) {
       console.error("Save to History Error:", error);
-      setSaveError(`Failed to save: ${error.message || "Unknown error"}. Please check your connection.`);
       // Don't throw here to avoid blocking the UI if save fails
       // handleFirestoreError(error, OperationType.WRITE, path);
     } finally {
@@ -357,16 +340,6 @@ export default function App() {
   };
 
   const analyzeData = async () => {
-    if (!user) {
-      setSaveError("Please login first to save your analysis history.");
-      setIsSaving(true); // Show the overlay with the error
-      setTimeout(() => {
-        setIsSaving(false);
-        setSaveError(null);
-      }, 5000);
-      return;
-    }
-
     const fileCount = files.rf.length + files.trn.length + files.radio.length;
     if (fileCount < 2) return;
     
@@ -891,38 +864,6 @@ export default function App() {
               <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest">
                 {isSaving ? "Finalizing Storage" : "Technical Audit in Progress"}
               </p>
-            </div>
-            {saveError && (
-              <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-2xl space-y-3 animate-in fade-in slide-in-from-top-2">
-                <div className="flex items-center gap-2 text-rose-400">
-                  <AlertCircle className="w-4 h-4" />
-                  <p className="text-sm font-bold">Saving Issue</p>
-                </div>
-                <p className="text-[11px] text-rose-400/80 leading-relaxed">
-                  {saveError}
-                </p>
-                <button 
-                  onClick={() => setIsSaving(false)}
-                  className="w-full py-2 bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 rounded-xl text-[10px] font-bold transition-all"
-                >
-                  Dismiss & View Results
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Success Notification */}
-      {saveSuccess && (
-        <div className="fixed bottom-8 right-8 z-[100] animate-in slide-in-from-right-10 duration-500">
-          <div className="glass-card bg-emerald-500/20 border-emerald-500/30 p-4 rounded-2xl flex items-center gap-3 shadow-2xl shadow-emerald-500/20">
-            <div className="w-8 h-8 bg-emerald-500 rounded-full flex items-center justify-center">
-              <Check className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <p className="text-sm font-bold text-white">Analysis Saved</p>
-              <p className="text-[10px] text-emerald-400/80 font-medium">Record added to history successfully.</p>
             </div>
           </div>
         </div>

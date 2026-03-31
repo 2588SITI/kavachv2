@@ -67,8 +67,8 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidReport(data) {
-      return (data.locoId is string || data.locoId is number) && 
-             (data.date is string) &&
+      return data.locoId is string && data.locoId.size() > 0 && data.locoId.size() < 50 &&
+             isValidDateString(data.date) &&
              data.userId == request.auth.uid &&
              (data.status in ['Pending', 'Reviewed', 'Resolved']) &&
              (data.overallPerformance is number) &&
@@ -81,8 +81,8 @@ service cloud.firestore {
     }
 
     function isValidStationHistory(data) {
-      return (data.stationId is string || data.stationId is number) &&
-             (data.date is string) &&
+      return data.stationId is string && data.stationId.size() > 0 &&
+             isValidDateString(data.date) &&
              data.userId == request.auth.uid &&
              (data.percentage is number) &&
              (data.received is number) &&
