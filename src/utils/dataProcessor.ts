@@ -10,23 +10,55 @@ import { RFData, TRNData, RadioData, DashboardStats, bucketDelay } from '../type
 export const parseFile = async (file: File): Promise<any[]> => {
   return new Promise((resolve, reject) => {
     if (file.name.endsWith('.csv')) {
-      Papa.parse(file, {
-        header: true,
-        dynamicTyping: true,
-        skipEmptyLines: true,
-        complete: (results) => {
-          // Clean keys
-          const cleaned = results.data.map((row: any) => {
-            const newRow: any = {};
-            Object.keys(row).forEach(key => {
-              newRow[key.trim()] = row[key];
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target?.result as string;
+        const dateRegex = /\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}/;
+        
+        // Scan first 1000 chars for a date
+        let foundDate: string | null = null;
+        const match = text.slice(0, 1000).match(dateRegex);
+        if (match) {
+          const dateStr = match[0];
+          let d = new Date(dateStr);
+          if (isNaN(d.getTime())) {
+            const dmyMatch = dateStr.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
+            if (dmyMatch) {
+              const day = dmyMatch[1].padStart(2, '0');
+              const month = dmyMatch[2].padStart(2, '0');
+              let year = dmyMatch[3];
+              if (year.length === 2) year = `20${year}`;
+              d = new Date(`${year}-${month}-${day}`);
+            }
+          }
+          if (!isNaN(d.getTime())) {
+            foundDate = dateStr;
+          }
+        }
+
+        Papa.parse(text, {
+          header: true,
+          dynamicTyping: true,
+          skipEmptyLines: true,
+          complete: (results) => {
+            // Clean keys
+            const cleaned = results.data.map((row: any) => {
+              const newRow: any = {};
+              Object.keys(row).forEach(key => {
+                newRow[key.trim()] = row[key];
+              });
+              if (foundDate && !newRow['Date'] && !newRow['Log Date']) {
+                newRow['_extractedDate'] = foundDate;
+              }
+              return newRow;
             });
-            return newRow;
-          });
-          resolve(cleaned);
-        },
-        error: (error) => reject(error),
-      });
+            resolve(cleaned);
+          },
+          error: (error) => reject(error),
+        });
+      };
+      reader.onerror = (error) => reject(error);
+      reader.readAsText(file);
     } else {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -35,12 +67,55 @@ export const parseFile = async (file: File): Promise<any[]> => {
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json(worksheet);
+        
+        // Aggressive date search in headers/first rows if not found in data
+        let foundDate: string | null = null;
+        const rawData: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        const dateRegex = /\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}/;
+        
+        // Scan first 10 rows for anything that looks like a date
+        for (let i = 0; i < Math.min(rawData.length, 10); i++) {
+          const row = rawData[i];
+          if (Array.isArray(row)) {
+            for (const cell of row) {
+              const cellStr = String(cell);
+              if (dateRegex.test(cellStr)) {
+                const match = cellStr.match(dateRegex);
+                if (match) {
+                  const dateStr = match[0];
+                  // Robust check: try parsing as is, then try DMY
+                  let d = new Date(dateStr);
+                  if (isNaN(d.getTime())) {
+                    const dmyMatch = dateStr.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
+                    if (dmyMatch) {
+                      const day = dmyMatch[1].padStart(2, '0');
+                      const month = dmyMatch[2].padStart(2, '0');
+                      let year = dmyMatch[3];
+                      if (year.length === 2) year = `20${year}`;
+                      d = new Date(`${year}-${month}-${day}`);
+                    }
+                  }
+
+                  if (!isNaN(d.getTime())) {
+                    foundDate = dateStr;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+          if (foundDate) break;
+        }
+
         // Clean keys
         const cleaned = jsonData.map((row: any) => {
           const newRow: any = {};
           Object.keys(row).forEach(key => {
             newRow[key.trim()] = row[key];
           });
+          if (foundDate && !newRow['Date'] && !newRow['Log Date']) {
+            newRow['_extractedDate'] = foundDate;
+          }
           return newRow;
         });
         resolve(cleaned);
@@ -64,11 +139,27 @@ const findColumn = (row: any, ...aliases: string[]) => {
 const parseTime = (timeStr: any) => {
   if (!timeStr) return NaN;
   let str = String(timeStr).trim();
+  
   // If it's just HH:mm:ss, prepend a dummy date
   if (str.match(/^\d{1,2}:\d{1,2}:\d{1,2}$/)) {
     str = `2000-01-01 ${str}`;
   }
-  return new Date(str).getTime();
+
+  // Handle DD/MM/YYYY or DD-MM-YYYY formats which JS Date often fails to parse
+  const dmyRegex = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})(.*)$/;
+  const match = str.match(dmyRegex);
+  if (match) {
+    const day = match[1].padStart(2, '0');
+    const month = match[2].padStart(2, '0');
+    let year = match[3];
+    if (year.length === 2) year = `20${year}`;
+    const rest = match[4] || '';
+    // Convert to YYYY-MM-DD for reliable parsing
+    str = `${year}-${month}-${day}${rest}`;
+  }
+
+  const d = new Date(str);
+  return d.getTime();
 };
 
 export const processDashboardData = (
@@ -94,9 +185,9 @@ export const processDashboardData = (
   const percentageCol = findColumn(firstRf, 'Percentage', 'Perc', 'Success', 'RFCOMM %') || 'Percentage';
   
   // RF Time Logic: User says D and F columns (index 3 and 5)
-  const rfDateCol = findColumn(firstRf, 'Date', 'Log Date', 'LogDate');
-  const rfTimeOnlyCol = findColumn(firstRf, 'Time', 'Log Time', 'LogTime');
-  const rfTimestampCol = findColumn(firstRf, 'Timestamp', 'DateTime', 'Date Time', 'Log Time Stamp');
+  const rfDateCol = findColumn(firstRf, 'Date', 'Log Date', 'LogDate', 'Log_Date', 'Report Date', 'ReportDate', 'Date_Time', 'DateTime', 'Day');
+  const rfTimeOnlyCol = findColumn(firstRf, 'Time', 'Log Time', 'LogTime', 'Log_Time', 'Report Time', 'ReportTime', 'Clock');
+  const rfTimestampCol = findColumn(firstRf, 'Timestamp', 'DateTime', 'Date Time', 'Log Time Stamp', 'Log_Time_Stamp', 'Time_Stamp', 'TimeStamp');
   const rfKeys = Object.keys(firstRf);
   
   const cleanTimeStr = (str: any) => {
@@ -115,8 +206,12 @@ export const processDashboardData = (
     else if (rfDateCol && rfTimeOnlyCol && row[rfDateCol] && row[rfTimeOnlyCol]) {
       rawTime = `${row[rfDateCol]} ${row[rfTimeOnlyCol]}`;
     }
+    else if (row['_extractedDate'] && rfTimeOnlyCol && row[rfTimeOnlyCol]) {
+      rawTime = `${row['_extractedDate']} ${row[rfTimeOnlyCol]}`;
+    }
     else if (rfTimeOnlyCol && row[rfTimeOnlyCol]) rawTime = String(row[rfTimeOnlyCol]);
     else if (rfDateCol && row[rfDateCol]) rawTime = String(row[rfDateCol]);
+    else if (row['_extractedDate']) rawTime = String(row['_extractedDate']);
     else if (rfKeys[3] && rfKeys[5] && row[rfKeys[3]] && row[rfKeys[5]]) {
       rawTime = `${row[rfKeys[3]]} ${row[rfKeys[5]]}`;
     }
@@ -502,6 +597,31 @@ export const processDashboardData = (
     .map(([length, info]) => ({ length, ...info, locoId: String(locoId).trim() })) // Simplified locoId for train lengths as it's usually static
     .sort((a, b) => a.length - b.length);
 
+  // Station Radio Packets (Columns AD to BF - Index 29 to 57)
+  const stationRadioPackets: DashboardStats['stationRadioPackets'] = [];
+  if (trnData && trnData.length > 0) {
+    const trnKeys = Object.keys(trnData[0]);
+    trnData.forEach(row => {
+      const packets: { [key: string]: any } = {};
+      // AD is index 29, BF is index 57
+      for (let i = 29; i <= 57; i++) {
+        const key = trnKeys[i];
+        if (key && row[key] !== undefined && row[key] !== null && row[key] !== '') {
+          packets[key] = row[key];
+        }
+      }
+      
+      if (Object.keys(packets).length > 0) {
+        stationRadioPackets.push({
+          time: String(row[trnTimeCol] || 'N/A'),
+          stationId: String(row[findColumn(row, 'Station Id', 'StationId', 'Station_Id') || ''] || 'N/A'),
+          packets,
+          locoId: String(row[trnLocoIdCol] || locoId).trim()
+        });
+      }
+    });
+  }
+
   // Sync/Lag Logic
   const maPacketsProcessed: { time: string; delay: number; category: string; length: number; locoId: string | number }[] = [];
   let lastTime: number | null = null;
@@ -610,14 +730,24 @@ export const processDashboardData = (
   radioData.forEach(p => { if (p[radioTimeCol]) allTimes.push(String(p[radioTimeCol])); });
   trnData?.forEach(row => { if (row[trnTimeCol]) allTimes.push(String(row[trnTimeCol])); });
   
-  // Sort times to find range
-  allTimes.sort();
+  // Sort times numerically to find accurate range
+  allTimes.sort((a, b) => {
+    const ta = parseTime(a);
+    const tb = parseTime(b);
+    if (isNaN(ta) && isNaN(tb)) return 0;
+    if (isNaN(ta)) return 1;
+    if (isNaN(tb)) return -1;
+    return ta - tb;
+  });
   
   const startTime = allTimes.length > 0 ? allTimes[0] : 'N/A';
   const endTime = allTimes.length > 0 ? allTimes[allTimes.length - 1] : 'N/A';
 
+  const logDate = rfData[0]?._extractedDate || (trnData && trnData[0]?._extractedDate) || radioData[0]?._extractedDate || null;
+
   return {
     locoId,
+    logDate,
     locoIds,
     stnPerf,
     badStns,
@@ -641,6 +771,7 @@ export const processDashboardData = (
     trainConfigChanges,
     uniqueTrainLengths,
     tagLinkIssues,
+    stationRadioPackets,
     multiLocoBadStns,
     startTime,
     endTime

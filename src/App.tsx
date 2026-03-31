@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Component, ReactNode } from 'react';
 import { 
   Shield, 
   Upload, 
@@ -30,7 +30,10 @@ import {
   ChevronRight,
   ChevronDown,
   Flag,
-  MessageSquare
+  MessageSquare,
+  Radio,
+  Check,
+  X
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -47,7 +50,8 @@ import {
   Line,
   LabelList,
   AreaChart,
-  Area
+  Area,
+  Legend
 } from 'recharts';
 import { parseFile, processDashboardData } from './utils/dataProcessor';
 import { DashboardStats } from './types';
@@ -71,17 +75,67 @@ import {
   doc,
   getDocFromServer,
   updateDoc,
-  deleteDoc
+  deleteDoc,
+  handleFirestoreError,
+  OperationType,
+  storage,
+  ref,
+  uploadBytes,
+  getDownloadURL
 } from './firebase';
-import { format } from 'date-fns';
+import { format, startOfDay, endOfDay } from 'date-fns';
+
+class ErrorBoundary extends Component<any, any> {
+  constructor(props: any) {
+    super(props);
+    (this as any).state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    if ((this as any).state.hasError) {
+      let errorMessage = "Kuch galat ho gaya hai.";
+      try {
+        const parsed = JSON.parse((this as any).state.error.message);
+        if (parsed.error && parsed.error.includes('Missing or insufficient permissions')) {
+          errorMessage = "Aapke paas is data ko access karne ki permission nahi hai.";
+        }
+      } catch (e) {
+        // Not a JSON error
+      }
+
+      return (
+        <div className="h-screen flex items-center justify-center bg-slate-950 text-white p-8">
+          <div className="glass-card p-8 rounded-2xl max-w-md text-center space-y-4 border border-rose-500/30">
+            <AlertTriangle className="w-12 h-12 text-rose-500 mx-auto" />
+            <h2 className="text-xl font-bold">Error Occurred</h2>
+            <p className="text-slate-400 text-sm">{errorMessage}</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="px-6 py-2 bg-emerald-500 rounded-lg font-bold text-sm"
+            >
+              Reload Page
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return (this as any).props.children;
+  }
+}
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [files, setFiles] = useState<{ rf: File | null; trn: File | null; radio: File | null }>({
-    rf: null,
-    trn: null,
-    radio: null,
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [files, setFiles] = useState<{ rf: File[]; trn: File[]; radio: File[] }>({
+    rf: [],
+    trn: [],
+    radio: [],
   });
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [activeTab, setActiveTab] = useState('summary');
@@ -137,21 +191,132 @@ export default function App() {
     testConnection();
   }, []);
 
-  const handleFileUpload = async (type: keyof typeof files, file: File) => {
-    setFiles((prev) => ({ ...prev, [type]: file }));
+  const handleFileUpload = async (type: keyof typeof files, newFiles: FileList | null) => {
+    if (!newFiles) return;
+    const fileArray = Array.from(newFiles);
+    setFiles((prev) => ({ 
+      ...prev, 
+      [type]: [...prev[type], ...fileArray] 
+    }));
   };
 
-  const saveAnalysisToHistory = async (processedStats: DashboardStats) => {
-    if (!user) return;
+  const handleClearFiles = (type: keyof typeof files) => {
+    setFiles((prev) => ({ ...prev, [type]: [] }));
+  };
+
+  const truncateStats = (stats: DashboardStats): DashboardStats => {
+    const MAX_LOGS = 200;
+    return {
+      ...stats,
+      maPackets: stats.maPackets.slice(0, MAX_LOGS),
+      nmsLogs: stats.nmsLogs.slice(0, MAX_LOGS),
+      stationRadioPackets: stats.stationRadioPackets.slice(0, MAX_LOGS),
+      modeDegradations: stats.modeDegradations.slice(0, MAX_LOGS),
+      shortPackets: stats.shortPackets.slice(0, MAX_LOGS),
+      brakeApplications: stats.brakeApplications.slice(0, MAX_LOGS),
+      signalOverrides: stats.signalOverrides.slice(0, MAX_LOGS),
+      sosEvents: stats.sosEvents.slice(0, MAX_LOGS),
+      trainConfigChanges: stats.trainConfigChanges.slice(0, MAX_LOGS),
+      tagLinkIssues: stats.tagLinkIssues.slice(0, MAX_LOGS),
+    };
+  };
+
+  const safeParseDate = (dateStr: string | null | undefined): Date | null => {
+    if (!dateStr || dateStr === 'N/A') return null;
+    let str = String(dateStr).trim();
+    
+    // If it's just HH:mm:ss, prepend a dummy date to make it parseable
+    if (str.match(/^\d{1,2}:\d{1,2}:\d{1,2}$/)) {
+      str = `${format(new Date(), 'yyyy-MM-dd')} ${str}`;
+    }
+
+    // Handle DD/MM/YYYY or DD-MM-YYYY formats
+    const dmyRegex = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})(.*)$/;
+    const match = str.match(dmyRegex);
+    if (match) {
+      const day = match[1].padStart(2, '0');
+      const month = match[2].padStart(2, '0');
+      let year = match[3];
+      if (year.length === 2) year = `20${year}`;
+      const rest = match[4] || '';
+      str = `${year}-${month}-${day}${rest}`;
+    }
+    
+    const d = new Date(str);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  const saveAnalysisToHistory = async (processedStats: DashboardStats, currentFiles: { rf: File[]; trn: File[]; radio: File[] }) => {
+    if (!user) {
+      setSaveError("You must be logged in to save analysis to history.");
+      return;
+    }
     
     setIsSaving(true);
+    setSaveError(null);
+    setSaveSuccess(false);
+    const path = 'reports';
     try {
-      const timestamp = new Date().toISOString();
+      // Try to use the date from the file if available, otherwise fallback to current time
+      let reportDate = new Date().toISOString();
+      const parsedDate = processedStats.logDate ? safeParseDate(processedStats.logDate) : safeParseDate(processedStats.startTime);
+      if (parsedDate) {
+        reportDate = parsedDate.toISOString();
+      }
+      
+      // Truncate large data to avoid Firestore 1MB limit
+      const truncated = truncateStats(processedStats);
+      const fullDataStr = JSON.stringify(truncated);
+      console.log("Saving report with data size:", (fullDataStr.length / 1024).toFixed(2), "KB");
+      
+      if (fullDataStr.length > 900000) {
+        console.warn("Report data is very large, approaching Firestore 1MB limit.");
+      }
+      
+      // Upload original files to Firebase Storage
+      const fileUploads: { name: string; url: string; type: string }[] = [];
+      const allFiles = [
+        ...currentFiles.rf.map(f => ({ file: f, type: 'RF' })),
+        ...currentFiles.trn.map(f => ({ file: f, type: 'TRN' })),
+        ...currentFiles.radio.map(f => ({ file: f, type: 'RADIO' }))
+      ];
+      
+      for (const { file, type } of allFiles) {
+        try {
+          // Use a unique path for each upload
+          const fileRef = ref(storage, `logs/${user.uid}/${Date.now()}_${file.name}`);
+          
+          // Use uploadBytes with metadata
+          const metadata = {
+            contentType: file.type || 'application/vnd.ms-excel',
+            customMetadata: {
+              'uploadedBy': user.uid,
+              'originalName': file.name,
+              'locoId': String(processedStats.locoId)
+            }
+          };
+          
+          const snapshot = await uploadBytes(fileRef, file, metadata);
+          const url = await getDownloadURL(snapshot.ref);
+          
+          fileUploads.push({
+            name: file.name,
+            url: url,
+            type: type
+          });
+        } catch (uploadErr: any) {
+          console.error(`Error uploading ${file.name}:`, uploadErr);
+          // If it's a retry limit error, it's likely a CORS or connection issue
+          if (uploadErr.code === 'storage/retry-limit-exceeded') {
+            console.warn("Storage upload failed due to connection/CORS issues. Please check if Firebase Storage is enabled and CORS is configured.");
+          }
+        }
+      }
       
       // Save main report
-      await addDoc(collection(db, 'reports'), {
+      await addDoc(collection(db, path), {
         locoId: processedStats.locoId,
-        date: timestamp,
+        date: reportDate,
         overallPerformance: processedStats.locoPerformance,
         nmsFailRate: processedStats.nmsFailRate,
         avgLag: processedStats.avgLag,
@@ -159,7 +324,9 @@ export default function App() {
         userId: user.uid,
         notes: "",
         status: "Pending",
-        isFlagged: false
+        isFlagged: false,
+        fullData: fullDataStr,
+        originalFiles: fileUploads
       });
 
       // Save station history for bad stations
@@ -167,7 +334,7 @@ export default function App() {
         .filter(s => s.percentage < 95)
         .map(s => addDoc(collection(db, 'station_history'), {
           stationId: s.stationId,
-          date: timestamp,
+          date: reportDate,
           locoId: s.locoId,
           percentage: s.percentage,
           received: s.received,
@@ -176,28 +343,70 @@ export default function App() {
         }));
 
       await Promise.all(stationHistoryPromises);
-      console.log("Analysis saved to history successfully.");
-    } catch (error) {
-      console.error("Error saving analysis to history:", error);
+      console.log("Analysis saved to history successfully with files:", fileUploads.length);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 5000);
+    } catch (error: any) {
+      console.error("Save to History Error:", error);
+      setSaveError(`Failed to save: ${error.message || "Unknown error"}. Please check your connection.`);
+      // Don't throw here to avoid blocking the UI if save fails
+      // handleFirestoreError(error, OperationType.WRITE, path);
     } finally {
       setIsSaving(false);
     }
   };
 
   const analyzeData = async () => {
-    const fileCount = [files.rf, files.trn, files.radio].filter(f => f !== null).length;
+    if (!user) {
+      setSaveError("Please login first to save your analysis history.");
+      setIsSaving(true); // Show the overlay with the error
+      setTimeout(() => {
+        setIsSaving(false);
+        setSaveError(null);
+      }, 5000);
+      return;
+    }
+
+    const fileCount = files.rf.length + files.trn.length + files.radio.length;
     if (fileCount < 2) return;
     
-    const rf = files.rf ? await parseFile(files.rf) : [];
-    const trn = files.trn ? await parseFile(files.trn) : null;
-    const radio = files.radio ? await parseFile(files.radio) : [];
-    const processed = processDashboardData(rf, trn, radio);
-    setStats(processed);
-    setSelectedStation('All');
-    setSelectedLoco('All');
+    setIsAnalyzing(true);
+    try {
+      const rfPromises = files.rf.map(f => parseFile(f));
+      const trnPromises = files.trn.map(f => parseFile(f));
+      const radioPromises = files.radio.map(f => parseFile(f));
 
-    if (user) {
-      saveAnalysisToHistory(processed);
+      const rfResults = await Promise.all(rfPromises);
+      const trnResults = await Promise.all(trnPromises);
+      const radioResults = await Promise.all(radioPromises);
+
+      const rf = rfResults.flat();
+      const trn = trnResults.length > 0 ? trnResults.flat() : null;
+      const radio = radioResults.flat();
+
+      const processed = processDashboardData(rf, trn, radio);
+      setStats(processed);
+      setSelectedStation('All');
+      setSelectedLoco('All');
+
+      if (user) {
+        // Run save with a timeout to prevent hanging the UI indefinitely
+        try {
+          const savePromise = saveAnalysisToHistory(processed, files);
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Save timeout")), 30000)
+          );
+          
+          await Promise.race([savePromise, timeoutPromise]);
+        } catch (saveErr) {
+          console.error("Background save failed or timed out:", saveErr);
+        }
+      }
+    } catch (error) {
+      console.error("Analysis Error:", error);
+    } finally {
+      setIsAnalyzing(false);
+      setIsSaving(false); // Double check to ensure saving overlay is gone
     }
   };
 
@@ -372,7 +581,6 @@ export default function App() {
       doc.save(`Kavach_Report_Loco_${filteredStats.locoId}${selectedStation !== 'All' ? '_Stn_' + selectedStation : ''}.pdf`);
     } catch (error) {
       console.error("PDF Generation Error:", error);
-      alert("Report generate karne mein samasya aayi hai. Kripya console check karein.");
     }
   };
 
@@ -381,7 +589,7 @@ export default function App() {
     if (!filteredStats) return;
 
     if (selectedLoco === 'All') {
-      alert("Kripya ek specific Loco ID select karein failure analysis letter ke liye.");
+      console.warn("Please select a specific Loco ID for failure analysis letter.");
       return;
     }
 
@@ -647,19 +855,91 @@ export default function App() {
       doc.save(`Failure_Analysis_Letter_Loco_${filteredStats.locoId}_${date.replace(/\//g, '-')}.pdf`);
     } catch (error) {
       console.error("Letter Generation Error:", error);
-      alert("Letter generate karne mein samasya aayi hai.");
     }
   };
 
   return (
-    <div className="flex h-screen relative font-sans">
+    <ErrorBoundary>
+      <div className="flex h-screen relative font-sans">
+      {/* Loading Overlays */}
+      {(isAnalyzing || isSaving) && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
+          <div className="glass-card p-10 rounded-3xl border border-white/10 max-w-md w-full text-center space-y-6 shadow-2xl shadow-emerald-500/10 animate-in zoom-in-95 duration-300">
+            <div className="relative mx-auto w-24 h-24">
+              <div className="absolute inset-0 border-4 border-emerald-500/20 rounded-full" />
+              <div className="absolute inset-0 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+              <div className="absolute inset-0 flex items-center justify-center">
+                {isSaving ? <Database className="w-10 h-10 text-emerald-400 animate-pulse" /> : <Activity className="w-10 h-10 text-emerald-400 animate-pulse" />}
+              </div>
+            </div>
+            
+            <div className="space-y-3">
+              <h3 className="text-2xl font-bold text-white tracking-tight">
+                {isSaving ? "Saving Analysis..." : "Analyzing Data..."}
+              </h3>
+              <p className="text-slate-400 text-sm leading-relaxed">
+                {isSaving 
+                  ? "Uploading original log files and saving report to history. Please do not close this window."
+                  : "Processing RF, TRN, and Radio logs to generate comprehensive technical diagnostics."}
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+                <div className="h-full bg-emerald-500 animate-progress" style={{ width: '100%' }} />
+              </div>
+              <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest">
+                {isSaving ? "Finalizing Storage" : "Technical Audit in Progress"}
+              </p>
+            </div>
+            {saveError && (
+              <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-2xl space-y-3 animate-in fade-in slide-in-from-top-2">
+                <div className="flex items-center gap-2 text-rose-400">
+                  <AlertCircle className="w-4 h-4" />
+                  <p className="text-sm font-bold">Saving Issue</p>
+                </div>
+                <p className="text-[11px] text-rose-400/80 leading-relaxed">
+                  {saveError}
+                </p>
+                <button 
+                  onClick={() => setIsSaving(false)}
+                  className="w-full py-2 bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 rounded-xl text-[10px] font-bold transition-all"
+                >
+                  Dismiss & View Results
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Success Notification */}
+      {saveSuccess && (
+        <div className="fixed bottom-8 right-8 z-[100] animate-in slide-in-from-right-10 duration-500">
+          <div className="glass-card bg-emerald-500/20 border-emerald-500/30 p-4 rounded-2xl flex items-center gap-3 shadow-2xl shadow-emerald-500/20">
+            <div className="w-8 h-8 bg-emerald-500 rounded-full flex items-center justify-center">
+              <Check className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-white">Analysis Saved</p>
+              <p className="text-[10px] text-emerald-400/80 font-medium">Record added to history successfully.</p>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="atmosphere" />
       
       {/* Sidebar */}
       <aside className="w-72 glass-sidebar text-white p-6 flex flex-col gap-8 shrink-0 z-10">
         <div className="flex items-center gap-3">
           <Shield className="w-8 h-8 text-emerald-400 drop-shadow-[0_0_8px_rgba(52,211,153,0.5)]" />
-          <h1 className="text-xl font-bold tracking-tight text-white">Kavach Expert</h1>
+          <div>
+            <h1 className="text-xl font-bold tracking-tight text-white">Kavach Expert</h1>
+            <div className="flex items-center gap-1.5">
+              <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+              <span className="text-[8px] font-black uppercase tracking-widest text-emerald-400/80">Cloud Storage Active</span>
+            </div>
+          </div>
         </div>
 
         {/* Mentorship Section */}
@@ -780,26 +1060,38 @@ export default function App() {
 
         <div className="flex flex-col gap-6">
           <div className="space-y-4">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Data Input Center</h3>
+            <div className="flex justify-between items-center">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Data Input Center</h3>
+              <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                {files.rf.length + files.trn.length + files.radio.length} Total Files
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-500 leading-tight">
+              Tip: You can select multiple files at once using <kbd className="bg-white/10 px-1 rounded">Ctrl</kbd> or <kbd className="bg-white/10 px-1 rounded">Shift</kbd>.
+            </p>
             <div className="space-y-3">
-              <FileDrop zone="rf" label="1. RFCOMM (Comm Health)" onUpload={handleFileUpload} file={files.rf} />
-              <FileDrop zone="trn" label="2. TRNMSNMA (Software)" onUpload={handleFileUpload} file={files.trn} />
-              <FileDrop zone="radio" label="3. RADIO_1 (Optional)" onUpload={handleFileUpload} file={files.radio} />
+              <FileDrop zone="rf" label="1. RFCOMM (Comm Health)" onUpload={handleFileUpload} files={files.rf} onClear={handleClearFiles} />
+              <FileDrop zone="trn" label="2. TRNMSNMA (Software)" onUpload={handleFileUpload} files={files.trn} onClear={handleClearFiles} />
+              <FileDrop zone="radio" label="3. RADIO_1 (Optional)" onUpload={handleFileUpload} files={files.radio} onClear={handleClearFiles} />
             </div>
           </div>
 
           <button
             onClick={analyzeData}
-            disabled={[files.rf, files.trn, files.radio].filter(f => f !== null).length < 2}
+            disabled={files.rf.length === 0 || files.trn.length === 0 || isAnalyzing}
             className={cn(
               "w-full py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-lg",
-              [files.rf, files.trn, files.radio].filter(f => f !== null).length >= 2 
+              (files.rf.length > 0 && files.trn.length > 0) 
                 ? "bg-emerald-500 hover:bg-emerald-400 text-white shadow-emerald-500/20" 
                 : "bg-white/5 text-slate-500 cursor-not-allowed border border-white/5"
             )}
           >
-            <Zap className="w-4 h-4" />
-            Analyze Logs
+            {isAnalyzing ? (
+              <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            ) : (
+              <Zap className="w-4 h-4" />
+            )}
+            {isAnalyzing ? "Processing..." : "Analyze Logs"}
           </button>
         </div>
       </aside>
@@ -823,6 +1115,28 @@ export default function App() {
           <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
             {/* Header */}
             <div className="flex flex-col gap-6">
+              <div className="flex items-center justify-between border-b border-white/5 pb-6">
+                <div className="flex flex-col gap-1">
+                  <h2 className="text-3xl font-bold text-white flex items-center gap-3">
+                    Loco {stats.locoId} Analysis
+                    {stats.startTime && stats.startTime !== 'N/A' && (
+                      <span className="text-sm font-normal text-slate-400 bg-white/5 px-3 py-1 rounded-lg border border-white/10 flex items-center gap-2">
+                        <Calendar className="w-4 h-4 text-emerald-400" />
+                        {(() => {
+                          const d = safeParseDate(stats.startTime);
+                          return d ? d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : stats.startTime;
+                        })()}
+                      </span>
+                    )}
+                  </h2>
+                  <p className="text-slate-400 text-sm">Comprehensive technical audit and diagnostic report</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+                    <p className="text-[10px] text-emerald-400 uppercase font-bold tracking-widest">Active Report</p>
+                  </div>
+                </div>
+              </div>
               <div className="flex justify-between items-end">
                 <div className="flex items-end gap-6">
                     <button 
@@ -853,6 +1167,7 @@ export default function App() {
                   <TabButton active={activeTab === 'nms'} onClick={() => setActiveTab('nms')} label="NMS" />
                   <TabButton active={activeTab === 'sync'} onClick={() => setActiveTab('sync')} label="Sync" />
                   <TabButton active={activeTab === 'interval'} onClick={() => setActiveTab('interval')} label="Interval" />
+                  <TabButton active={activeTab === 'radio'} onClick={() => setActiveTab('radio')} label="Radio Packets" />
                   <TabButton active={activeTab === 'history'} onClick={() => setActiveTab('history')} label="History" />
                 </div>
               </div>
@@ -907,28 +1222,37 @@ export default function App() {
             {activeTab === 'nms' && filteredStats && <NMSAnalysis stats={filteredStats} />}
             {activeTab === 'sync' && filteredStats && <SyncAnalysis stats={filteredStats} />}
             {activeTab === 'interval' && filteredStats && <IntervalAnalysis stats={filteredStats} />}
+            {activeTab === 'radio' && filteredStats && <RadioPacketAnalysis stats={filteredStats} />}
             {activeTab === 'history' && (
               <HistoryView 
                 user={user} 
                 handleLogin={handleLogin} 
                 isLoggingIn={isLoggingIn} 
                 loginError={loginError} 
+                selectedLoco={selectedLoco}
+                selectedStation={selectedStation}
+                onRecall={(data) => {
+                  setStats(data);
+                  setActiveTab('summary');
+                }}
               />
             )}
           </div>
         )}
       </main>
     </div>
+    </ErrorBoundary>
   );
 }
 
 function StationAnalysis({ stats }: { stats: DashboardStats }) {
-  // Group stats by station for the table but keep individual for the chart if needed
-  // Or better, prepare a chart-friendly data structure
-  const chartData = stats.stationStats.reduce((acc: any[], curr) => {
+  const [viewMode, setViewMode] = useState<'split' | 'grouped'>('grouped');
+
+  // Group stats by station for the grouped chart
+  const groupedData = stats.stationStats.reduce((acc: any[], curr) => {
     const existing = acc.find(a => a.stationId === curr.stationId);
     const suffix = curr.direction.toLowerCase().includes('nominal') ? 'Nominal' : 
-                   curr.direction.toLowerCase().includes('reverse') ? 'Reverse' : curr.direction;
+                   curr.direction.toLowerCase().includes('reverse') ? 'Reverse' : 'Other';
     
     if (existing) {
       existing[`perc_${suffix}`] = curr.percentage;
@@ -948,26 +1272,57 @@ function StationAnalysis({ stats }: { stats: DashboardStats }) {
   return (
     <div className="space-y-6">
       <div className="glass-card p-8 rounded-2xl">
-        <div className="flex justify-between items-center mb-6">
-          <h3 className="text-xl font-bold text-white flex items-center gap-2">
-            <BarChart3 className="w-6 h-6 text-emerald-400" />
-            Station-wise RFCOMM Performance (Nominal vs Reverse)
-          </h3>
-          <div className="flex gap-4 text-[10px] font-bold uppercase tracking-widest">
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-emerald-500 rounded" /> Healthy ({'>'}= 95%)</div>
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-rose-500 rounded" /> Critical ({'<'} 95%)</div>
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-emerald-500/20 rounded-lg">
+              <BarChart3 className="w-6 h-6 text-emerald-400" />
+            </div>
+            <div>
+              <h3 className="text-xl font-bold text-white">
+                RFCOMM Performance Analysis
+              </h3>
+              <p className="text-xs text-slate-400">Nominal vs Reverse Success Rates per Station</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
+              <button
+                onClick={() => setViewMode('grouped')}
+                className={cn(
+                  "px-4 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all",
+                  viewMode === 'grouped' ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20" : "text-slate-400 hover:text-white"
+                )}
+              >
+                Grouped View
+              </button>
+              <button
+                onClick={() => setViewMode('split')}
+                className={cn(
+                  "px-4 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all",
+                  viewMode === 'split' ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20" : "text-slate-400 hover:text-white"
+                )}
+              >
+                Individual View
+              </button>
+            </div>
+
+            <div className="hidden sm:flex gap-4 text-[10px] font-bold uppercase tracking-widest">
+              <div className="flex items-center gap-2"><div className="w-3 h-3 bg-emerald-500 rounded" /> Healthy ({'>'}= 95%)</div>
+              <div className="flex items-center gap-2"><div className="w-3 h-3 bg-rose-500 rounded" /> Critical ({'<'} 95%)</div>
+            </div>
           </div>
         </div>
         
         <div className="h-[500px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart 
-              data={stats.stationStats.map(s => ({ ...s, label: `${s.stationId} (${s.direction})` }))} 
+              data={viewMode === 'grouped' ? groupedData : stats.stationStats.map(s => ({ ...s, label: `${s.stationId} (${s.direction})` }))} 
               margin={{ bottom: 70 }}
             >
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
               <XAxis 
-                dataKey="label" 
+                dataKey={viewMode === 'grouped' ? "stationId" : "label"} 
                 stroke="#64748b" 
                 fontSize={10}
                 angle={-45}
@@ -986,18 +1341,46 @@ function StationAnalysis({ stats }: { stats: DashboardStats }) {
                 cursor={{ fill: 'rgba(255,255,255,0.05)' }}
                 formatter={(value: number, name: string, props: any) => [
                   `${value.toFixed(2)}%`, 
-                  `Success (${props.payload.direction})`
+                  viewMode === 'grouped' ? name.replace('perc_', '') : `Success (${props.payload.direction})`
                 ]}
               />
-              <Bar dataKey="percentage" radius={[4, 4, 0, 0]} barSize={30}>
-                {stats.stationStats.map((entry, index) => (
-                  <Cell 
-                    key={`cell-${index}`} 
-                    fill={entry.percentage < 95 ? '#ef4444' : '#10b981'} 
-                    fillOpacity={0.8}
-                  />
-                ))}
-              </Bar>
+              <Legend 
+                verticalAlign="top" 
+                height={36} 
+                wrapperStyle={{ fontSize: '10px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.1em' }}
+              />
+              {viewMode === 'grouped' ? (
+                <>
+                  <Bar name="Nominal" dataKey="perc_Nominal" radius={[4, 4, 0, 0]} barSize={20}>
+                    {groupedData.map((entry, index) => (
+                      <Cell 
+                        key={`cell-nom-${index}`} 
+                        fill={entry.perc_Nominal < 95 ? '#ef4444' : '#10b981'} 
+                        fillOpacity={0.8}
+                      />
+                    ))}
+                  </Bar>
+                  <Bar name="Reverse" dataKey="perc_Reverse" radius={[4, 4, 0, 0]} barSize={20}>
+                    {groupedData.map((entry, index) => (
+                      <Cell 
+                        key={`cell-rev-${index}`} 
+                        fill={entry.perc_Reverse < 95 ? '#f43f5e' : '#34d399'} 
+                        fillOpacity={0.6}
+                      />
+                    ))}
+                  </Bar>
+                </>
+              ) : (
+                <Bar name="RFCOMM Success" dataKey="percentage" radius={[4, 4, 0, 0]} barSize={30}>
+                  {stats.stationStats.map((entry, index) => (
+                    <Cell 
+                      key={`cell-${index}`} 
+                      fill={entry.percentage < 95 ? '#ef4444' : '#10b981'} 
+                      fillOpacity={0.8}
+                    />
+                  ))}
+                </Bar>
+              )}
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -1704,12 +2087,18 @@ function HistoryView({
   user, 
   handleLogin, 
   isLoggingIn, 
-  loginError 
+  loginError,
+  onRecall,
+  selectedLoco,
+  selectedStation
 }: { 
   user: User | null; 
   handleLogin: () => Promise<void>; 
   isLoggingIn: boolean; 
   loginError: string | null; 
+  onRecall: (data: DashboardStats) => void;
+  selectedLoco: string;
+  selectedStation: string;
 }) {
   const [reports, setReports] = useState<any[]>([]);
   const [stationHistory, setStationHistory] = useState<any[]>([]);
@@ -1717,30 +2106,123 @@ function HistoryView({
   const [view, setView] = useState<'reports' | 'stations'>('reports');
   const [editingNotes, setEditingNotes] = useState<string | null>(null);
   const [tempNotes, setTempNotes] = useState("");
+  const [startDate, setStartDate] = useState<string>("");
+  const [endDate, setEndDate] = useState<string>("");
+
+  const safeFormat = (dateStr: string, fmt: string) => {
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return "...";
+      return format(d, fmt);
+    } catch (e) {
+      return "...";
+    }
+  };
 
   const fetchData = async () => {
     if (!user) return;
     setLoading(true);
     try {
-      const reportsQuery = query(
-        collection(db, 'reports'),
-        where('userId', '==', user.uid),
-        orderBy('date', 'desc'),
-        limit(50)
-      );
-      const reportsSnapshot = await getDocs(reportsQuery);
-      setReports(reportsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      let reportsQuery;
+      if (startDate || endDate) {
+        // Parse YYYY-MM-DD manually to ensure local time interpretation
+        const parseLocalDate = (s: string) => {
+          const [y, m, d] = s.split('-').map(Number);
+          return new Date(y, m - 1, d);
+        };
 
-      const stationQuery = query(
-        collection(db, 'station_history'),
-        where('userId', '==', user.uid),
-        orderBy('date', 'desc'),
-        limit(100)
-      );
+        let start = startDate ? startOfDay(parseLocalDate(startDate)).toISOString() : null;
+        let end = endDate ? endOfDay(parseLocalDate(endDate)).toISOString() : null;
+        
+        // If only one is provided, treat it as a single day or open-ended range
+        if (startDate && !endDate) {
+          end = endOfDay(parseLocalDate(startDate)).toISOString();
+        } else if (!startDate && endDate) {
+          // No start, just end
+        }
+
+        let constraints = [where('userId', '==', user.uid)];
+        if (start) constraints.push(where('date', '>=', start));
+        if (end) constraints.push(where('date', '<=', end));
+        
+        reportsQuery = query(
+          collection(db, 'reports'),
+          ...constraints,
+          orderBy('date', 'desc'),
+          limit(100)
+        );
+      } else {
+        reportsQuery = query(
+          collection(db, 'reports'),
+          where('userId', '==', user.uid),
+          orderBy('date', 'desc'),
+          limit(50)
+        );
+      }
+      const reportsSnapshot = await getDocs(reportsQuery);
+      setReports(reportsSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) })));
+
+      // Also filter station history if needed
+      let stationQuery;
+      if (startDate || endDate) {
+        const parseLocalDate = (s: string) => {
+          const [y, m, d] = s.split('-').map(Number);
+          return new Date(y, m - 1, d);
+        };
+
+        let start = startDate ? startOfDay(parseLocalDate(startDate)).toISOString() : null;
+        let end = endDate ? endOfDay(parseLocalDate(endDate)).toISOString() : null;
+        if (startDate && !endDate) end = endOfDay(parseLocalDate(startDate)).toISOString();
+
+        let constraints = [where('userId', '==', user.uid)];
+        if (start) constraints.push(where('date', '>=', start));
+        if (end) constraints.push(where('date', '<=', end));
+        
+        stationQuery = query(
+          collection(db, 'station_history'),
+          ...constraints,
+          orderBy('date', 'desc'),
+          limit(500)
+        );
+      } else {
+        stationQuery = query(
+          collection(db, 'station_history'),
+          where('userId', '==', user.uid),
+          orderBy('date', 'desc'),
+          limit(100)
+        );
+      }
       const stationSnapshot = await getDocs(stationQuery);
-      setStationHistory(stationSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      const rawStationData = stationSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) }));
+
+      if (startDate || endDate) {
+        // Aggregate by stationId
+        const aggregation: Record<string, { totalPerc: number, count: number, locoIds: Set<string>, lastDate: string }> = {};
+        rawStationData.forEach(entry => {
+          const sid = entry.stationId || 'Unknown';
+          if (!aggregation[sid]) {
+            aggregation[sid] = { totalPerc: 0, count: 0, locoIds: new Set(), lastDate: entry.date };
+          }
+          aggregation[sid].totalPerc += entry.percentage || 0;
+          aggregation[sid].count += 1;
+          if (entry.locoId) aggregation[sid].locoIds.add(entry.locoId);
+        });
+
+        const aggregatedData = Object.entries(aggregation).map(([id, data]) => ({
+          id: `agg-${id}`,
+          stationId: id,
+          percentage: data.totalPerc / data.count,
+          locoId: Array.from(data.locoIds).join(', '),
+          date: data.lastDate,
+          isAggregated: true,
+          sampleCount: data.count
+        }));
+        setStationHistory(aggregatedData);
+      } else {
+        setStationHistory(rawStationData);
+      }
     } catch (error) {
-      console.error("Error fetching history:", error);
+      handleFirestoreError(error, OperationType.GET, 'reports');
     } finally {
       setLoading(false);
     }
@@ -1748,7 +2230,7 @@ function HistoryView({
 
   useEffect(() => {
     fetchData();
-  }, [user]);
+  }, [user, startDate, endDate]);
 
   const toggleFlag = async (reportId: string, currentFlag: boolean) => {
     try {
@@ -1824,9 +2306,20 @@ function HistoryView({
     );
   }
 
+  const filteredReports = reports.filter(r => {
+    if (selectedLoco !== 'All' && String(r.locoId) !== selectedLoco) return false;
+    return true;
+  });
+
+  const filteredStationHistory = stationHistory.filter(h => {
+    if (selectedLoco !== 'All' && String(h.locoId) !== selectedLoco) return false;
+    if (selectedStation !== 'All' && String(h.stationId) !== selectedStation) return false;
+    return true;
+  });
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div className="flex gap-2 p-1 bg-white/5 rounded-xl border border-white/5">
           <button 
             onClick={() => setView('reports')}
@@ -1847,9 +2340,85 @@ function HistoryView({
             Station Failures
           </button>
         </div>
-        <p className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">
-          Showing last {view === 'reports' ? reports.length : stationHistory.length} records
-        </p>
+        
+        <div className="flex flex-wrap items-center gap-4 w-full md:w-auto">
+          <div className="flex items-center gap-3 bg-white/5 p-3 rounded-2xl border border-white/10 shadow-xl backdrop-blur-md">
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[9px] text-emerald-400 font-bold ml-1 tracking-widest uppercase">From Date</span>
+              <div className="relative">
+                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-400 pointer-events-none" />
+                <input 
+                  type="date" 
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="bg-slate-900/50 border border-white/20 rounded-xl pl-10 pr-3 py-2.5 text-xs font-bold text-white focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/50 transition-all w-40"
+                />
+              </div>
+            </div>
+            
+            <div className="flex items-center justify-center pt-5">
+              <div className="w-4 h-px bg-white/20" />
+            </div>
+            
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[9px] text-emerald-400 font-bold ml-1 tracking-widest uppercase">To Date</span>
+              <div className="relative">
+                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-400 pointer-events-none" />
+                <input 
+                  type="date" 
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="bg-slate-900/50 border border-white/20 rounded-xl pl-10 pr-3 py-2.5 text-xs font-bold text-white focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/50 transition-all w-40"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-end pt-5 gap-2">
+              <button 
+                onClick={() => fetchData()}
+                className="p-2.5 bg-emerald-500 hover:bg-emerald-400 text-white rounded-xl shadow-lg shadow-emerald-500/20 transition-all active:scale-95"
+                title="Refresh Search"
+              >
+                <FileSearch className="w-4 h-4" />
+              </button>
+              {(startDate || endDate) && (
+                <button 
+                  onClick={() => { setStartDate(""); setEndDate(""); }}
+                  className="p-2.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-xl border border-rose-500/20 transition-all"
+                  title="Clear Filter"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+          
+          <div className="flex flex-col items-end justify-center h-full">
+            <div className="bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-lg">
+              <p className="text-[10px] text-emerald-400 uppercase font-bold tracking-widest whitespace-nowrap flex items-center gap-2">
+                {startDate && endDate && startDate === endDate ? (
+                  <>
+                    <CheckCircle2 className="w-3 h-3" /> 
+                    <span>On: {safeFormat(startDate, 'dd MMM yyyy')}</span>
+                  </>
+                ) : startDate || endDate ? (
+                  <>
+                    <Calendar className="w-3 h-3" />
+                    <span>{startDate ? safeFormat(startDate, 'dd MMM') : '...'} — {endDate ? safeFormat(endDate, 'dd MMM') : '...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Clock className="w-3 h-3" />
+                    <span>Latest Records</span>
+                  </>
+                )}
+              </p>
+            </div>
+            <p className="text-[9px] text-slate-600 font-bold uppercase tracking-tighter mt-1 mr-1">
+              {view === 'reports' ? filteredReports.length : filteredStationHistory.length} records found
+            </p>
+          </div>
+        </div>
       </div>
 
       {loading ? (
@@ -1858,7 +2427,7 @@ function HistoryView({
         </div>
       ) : view === 'reports' ? (
         <div className="grid gap-4">
-          {reports.length > 0 ? reports.map((report) => (
+          {filteredReports.length > 0 ? filteredReports.map((report) => (
             <div key={report.id} className={cn(
               "glass-card p-6 rounded-2xl border transition-all group relative",
               report.isFlagged ? "border-amber-500/50 bg-amber-500/5 shadow-lg shadow-amber-500/10" : "border-white/5 hover:border-emerald-500/30"
@@ -1937,11 +2506,62 @@ function HistoryView({
                     {report.status || 'Pending'}
                   </button>
                 </div>
-                <div className="flex items-end justify-end">
-                  <button className="text-emerald-400 hover:text-emerald-300 text-xs font-bold flex items-center gap-1 transition-colors">
+                <div className="flex items-end justify-end gap-3">
+                  {report.fullData && (
+                    <button 
+                      onClick={() => {
+                        try {
+                          const data = JSON.parse(report.fullData);
+                          onRecall(data);
+                        } catch (e) {
+                          console.error("Error recalling data:", e);
+                        }
+                      }}
+                      className="text-emerald-400 hover:text-emerald-300 text-[10px] font-bold flex items-center gap-1 transition-colors bg-emerald-500/10 px-2 py-1 rounded"
+                    >
+                      <Activity className="w-3 h-3" /> Recall Analysis
+                    </button>
+                  )}
+                  <button className="text-slate-400 hover:text-white text-[10px] font-bold flex items-center gap-1 transition-colors">
                     View Details <ChevronRight className="w-3 h-3" />
                   </button>
                 </div>
+              </div>
+
+              {/* Original Files Download Section */}
+              <div className="mt-4 pt-4 border-t border-white/5">
+                <p className="text-[10px] text-slate-500 uppercase font-bold mb-2 flex items-center gap-2">
+                  <Database className="w-3 h-3 text-emerald-400" /> Original Log Files
+                </p>
+                {report.originalFiles ? (
+                  report.originalFiles.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {report.originalFiles.map((file: any, idx: number) => (
+                        <a 
+                          key={idx}
+                          href={file.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[10px] text-slate-300 hover:text-white transition-all"
+                        >
+                          <Download className="w-3 h-3 text-emerald-400" />
+                          <span className="max-w-[150px] truncate">{file.name}</span>
+                          <span className="px-1.5 py-0.5 bg-emerald-500/20 text-emerald-400 rounded text-[8px] font-black">{file.type}</span>
+                        </a>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-rose-500/5 border border-rose-500/10 rounded-lg">
+                      <AlertCircle className="w-3 h-3 text-rose-400" />
+                      <p className="text-[10px] text-rose-400/80 italic">Upload failed for this record. Storage might not be configured correctly.</p>
+                    </div>
+                  )
+                ) : (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-slate-500/5 border border-white/5 rounded-lg">
+                    <AlertCircle className="w-3 h-3 text-slate-500" />
+                    <p className="text-[10px] text-slate-500 italic">No original files available (uploaded before storage fix).</p>
+                  </div>
+                )}
               </div>
 
               <div className="mt-4 pt-4 border-t border-white/5">
@@ -1990,37 +2610,52 @@ function HistoryView({
               <tr>
                 <th className="py-4 px-6">Date</th>
                 <th className="py-4 px-6">Station</th>
-                <th className="py-4 px-6">Loco ID</th>
-                <th className="py-4 px-6">Performance</th>
+                <th className="py-4 px-6">Loco ID(s)</th>
+                <th className="py-4 px-6">{startDate || endDate ? 'Average Performance' : 'Performance'}</th>
                 <th className="py-4 px-6">Status</th>
               </tr>
             </thead>
             <tbody className="text-slate-300 divide-y divide-white/5">
-              {stationHistory.length > 0 ? stationHistory.map((entry) => (
-                <tr key={entry.id} className="hover:bg-white/5 transition-colors">
-                  <td className="py-4 px-6 text-xs text-slate-500">{format(new Date(entry.date), 'MMM d, yyyy')}</td>
-                  <td className="py-4 px-6 font-bold text-white">{entry.stationName}</td>
-                  <td className="py-4 px-6 font-mono text-xs">{entry.locoId}</td>
+              {filteredStationHistory.length > 0 ? filteredStationHistory.map((entry, idx) => (
+                <tr key={entry.id || idx} className="hover:bg-white/5 transition-colors">
+                  <td className="py-4 px-6 text-xs text-slate-500">
+                    {entry.isAggregated ? (
+                      <span className="text-emerald-400 font-bold">Aggregated</span>
+                    ) : (
+                      format(new Date(entry.date), 'MMM d, yyyy')
+                    )}
+                  </td>
+                  <td className="py-4 px-6 font-bold text-white">
+                    {entry.stationId}
+                    {entry.isAggregated && (
+                      <span className="ml-2 text-[8px] bg-white/10 px-1 rounded text-slate-400">
+                        {entry.sampleCount} samples
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-4 px-6 font-mono text-[10px] max-w-[150px] truncate" title={entry.locoId}>
+                    {entry.locoId}
+                  </td>
                   <td className="py-4 px-6">
                     <div className="flex items-center gap-2">
                       <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden w-24">
                         <div 
                           className={cn(
                             "h-full rounded-full",
-                            entry.performance < 90 ? "bg-rose-500" : "bg-amber-500"
+                            entry.percentage < 90 ? "bg-rose-500" : "bg-amber-500"
                           )}
-                          style={{ width: `${entry.performance}%` }}
+                          style={{ width: `${entry.percentage}%` }}
                         />
                       </div>
-                      <span className="font-bold">{entry.performance.toFixed(1)}%</span>
+                      <span className="font-bold">{entry.percentage.toFixed(1)}%</span>
                     </div>
                   </td>
                   <td className="py-4 px-6">
                     <span className={cn(
                       "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
-                      entry.performance < 90 ? "bg-rose-500/20 text-rose-400" : "bg-amber-500/20 text-amber-400"
+                      entry.percentage < 90 ? "bg-rose-500/20 text-rose-400" : "bg-amber-500/20 text-amber-400"
                     )}>
-                      {entry.performance < 90 ? 'Critical' : 'Marginal'}
+                      {entry.percentage < 90 ? 'Critical' : 'Marginal'}
                     </span>
                   </td>
                 </tr>
@@ -2035,26 +2670,167 @@ function HistoryView({
   );
 }
 
-function FileDrop({ zone, label, onUpload, file }: { zone: string; label: string; onUpload: any; file: File | null }) {
+function FileDrop({ zone, label, onUpload, files, onClear }: { zone: string; label: string; onUpload: any; files: File[]; onClear: (zone: string) => void }) {
+  const hasFiles = files.length > 0;
   return (
-    <div className={cn(
-      "relative group cursor-pointer rounded-xl border-2 border-dashed transition-all p-4 text-center",
-      file ? "bg-emerald-500/10 border-emerald-500/50" : "bg-white/5 border-white/10 hover:border-emerald-500/30"
-    )}>
-      <input
-        type="file"
-        className="absolute inset-0 opacity-0 cursor-pointer"
-        onChange={(e) => e.target.files?.[0] && onUpload(zone, e.target.files[0])}
-      />
-      <div className="flex flex-col items-center gap-2">
-        {file ? (
-          <CheckCircle2 className="w-6 h-6 text-emerald-400" />
-        ) : (
-          <Upload className="w-6 h-6 text-slate-500 group-hover:text-emerald-400 transition-colors" />
-        )}
-        <span className={cn("text-xs font-medium", file ? "text-emerald-400" : "text-slate-400")}>
-          {file ? file.name : label}
-        </span>
+    <div className="space-y-2">
+      <div className={cn(
+        "relative group cursor-pointer rounded-xl border-2 border-dashed transition-all p-4 text-center",
+        hasFiles ? "bg-emerald-500/10 border-emerald-500/50" : "bg-white/5 border-white/10 hover:border-emerald-500/30"
+      )}>
+        <input
+          type="file"
+          multiple
+          className="absolute inset-0 opacity-0 cursor-pointer"
+          onChange={(e) => onUpload(zone, e.target.files)}
+        />
+        <div className="flex flex-col items-center gap-2">
+          {hasFiles ? (
+            <div className="relative">
+              <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+              <span className="absolute -top-2 -right-2 bg-emerald-500 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full">
+                {files.length}
+              </span>
+            </div>
+          ) : (
+            <Upload className="w-6 h-6 text-slate-500 group-hover:text-emerald-400 transition-colors" />
+          )}
+          <span className={cn("text-xs font-medium", hasFiles ? "text-emerald-400" : "text-slate-400")}>
+            {hasFiles ? `${files.length} Files Selected` : label}
+          </span>
+        </div>
+      </div>
+      {hasFiles && (
+        <button 
+          onClick={() => onClear(zone)}
+          className="w-full flex items-center justify-center gap-1 text-[10px] font-bold text-rose-400 hover:text-rose-300 transition-colors"
+        >
+          <Trash2 className="w-3 h-3" /> Clear Files
+        </button>
+      )}
+    </div>
+  );
+}
+
+function RadioPacketAnalysis({ stats }: { stats: DashboardStats }) {
+  if (!stats.stationRadioPackets || stats.stationRadioPackets.length === 0) {
+    return (
+      <div className="glass-card p-12 rounded-2xl text-center">
+        <Radio className="w-12 h-12 text-slate-600 mx-auto mb-4 opacity-20" />
+        <h3 className="text-xl font-bold text-slate-400">No Radio Packet Data Found</h3>
+        <p className="text-slate-500 mt-2">Ensure the TRNMSNMA log file contains columns AD to BF.</p>
+      </div>
+    );
+  }
+
+  // Get all unique packet keys (column headers)
+  const packetKeys = Array.from(new Set(
+    stats.stationRadioPackets.flatMap(p => Object.keys(p.packets))
+  )).sort();
+
+  return (
+    <div className="space-y-6">
+      <div className="glass-card p-8 rounded-2xl">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="p-2 bg-blue-500/20 rounded-lg">
+            <Radio className="w-6 h-6 text-blue-400" />
+          </div>
+          <div>
+            <h3 className="text-xl font-bold text-white">Station Radio Packet Analysis</h3>
+            <p className="text-xs text-slate-400">Detailed packet status from TRNMSNMA (Columns AD to BF)</p>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-[10px]">
+            <thead className="text-slate-500 uppercase font-bold border-b border-white/5">
+              <tr>
+                <th className="pb-3 px-2 whitespace-nowrap">Time</th>
+                <th className="pb-3 px-2 whitespace-nowrap">Station</th>
+                {packetKeys.map(key => (
+                  <th key={key} className="pb-3 px-2 whitespace-nowrap text-center min-w-[40px]">{key}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="text-slate-300">
+              {stats.stationRadioPackets.slice(0, 100).map((row, i) => (
+                <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                  <td className="py-2 px-2 font-mono text-blue-400 whitespace-nowrap">{row.time}</td>
+                  <td className="py-2 px-2 font-bold text-white whitespace-nowrap">{row.stationId}</td>
+                  {packetKeys.map(key => {
+                    const val = row.packets[key];
+                    const isHealthy = val === 1 || val === '1' || String(val).toLowerCase() === 'ok';
+                    const isError = val === 0 || val === '0' || String(val).toLowerCase().includes('fail') || String(val).toLowerCase().includes('err');
+                    
+                    return (
+                      <td key={key} className="py-2 px-2 text-center">
+                        <span className={cn(
+                          "inline-block w-4 h-4 rounded-sm flex items-center justify-center text-[8px] font-bold",
+                          isHealthy ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/20" :
+                          isError ? "bg-rose-500/20 text-rose-400 border border-rose-500/20" :
+                          val !== undefined ? "bg-blue-500/20 text-blue-400 border border-blue-500/20" : "opacity-10"
+                        )}>
+                          {val !== undefined ? val : '-'}
+                        </span>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {stats.stationRadioPackets.length > 100 && (
+            <p className="text-[10px] text-slate-500 mt-4 italic">Showing first 100 entries of {stats.stationRadioPackets.length} total.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="glass-card p-6 rounded-2xl">
+          <h4 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Packet Health Summary</h4>
+          <div className="space-y-4">
+            {packetKeys.map(key => {
+              const total = stats.stationRadioPackets.length;
+              const healthy = stats.stationRadioPackets.filter(p => p.packets[key] === 1 || p.packets[key] === '1').length;
+              const perc = (healthy / total) * 100;
+              
+              return (
+                <div key={key} className="space-y-1">
+                  <div className="flex justify-between text-[10px]">
+                    <span className="text-slate-400 font-bold">{key}</span>
+                    <span className={cn("font-mono", perc >= 95 ? "text-emerald-400" : "text-rose-400")}>
+                      {perc.toFixed(1)}% Healthy
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+                    <div 
+                      className={cn("h-full transition-all duration-500", perc >= 95 ? "bg-emerald-500" : "bg-rose-500")}
+                      style={{ width: `${perc}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="glass-card p-6 rounded-2xl">
+          <h4 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Diagnostic Insight</h4>
+          <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+            <div className="flex items-start gap-3">
+              <Info className="w-5 h-5 text-blue-400 mt-0.5" />
+              <div className="text-sm text-slate-300">
+                <p className="font-bold text-blue-400 mb-1">Radio Packet Interpretation</p>
+                <p>Columns AD to BF in TRNMSNMA logs represent the real-time health of radio communication between the Loco and various trackside stations.</p>
+                <ul className="list-disc list-inside mt-2 space-y-1 text-xs text-slate-400">
+                  <li><span className="text-emerald-400 font-bold">1</span> indicates a successful packet exchange.</li>
+                  <li><span className="text-rose-400 font-bold">0</span> indicates a missed or failed packet.</li>
+                  <li>Frequent <span className="text-rose-400 font-bold">0</span>s at specific stations suggest local RF interference or hardware issues at those locations.</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

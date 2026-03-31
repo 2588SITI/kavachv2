@@ -23,6 +23,7 @@ export interface RadioData {
 
 export interface DashboardStats {
   locoId: string | number;
+  logDate?: string | null;
   locoIds: (string | number)[];
   stnPerf: { stationId: string | number; percentage: number; locoId: string | number }[];
   badStns: (string | number)[];
@@ -60,6 +61,12 @@ export interface DashboardStats {
     locoCount: number; 
     avgPerf: number; 
     locoDetails: { id: string | number; perf: number; startTime: string; endTime: string }[] 
+  }[];
+  stationRadioPackets: {
+    time: string;
+    stationId: string;
+    packets: { [key: string]: any };
+    locoId: string | number;
   }[];
   startTime: string;
   endTime: string;
