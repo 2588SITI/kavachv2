@@ -141,6 +141,7 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedStation, setSelectedStation] = useState<string>('All');
   const [selectedLoco, setSelectedLoco] = useState<string>('All');
+  const [selectedDate, setSelectedDate] = useState<string>('All');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
 
@@ -367,6 +368,7 @@ export default function App() {
       setStats(processed);
       setSelectedStation('All');
       setSelectedLoco('All');
+      setSelectedDate('All');
 
       if (user) {
         // Run save with a timeout to prevent hanging the UI indefinitely
@@ -393,6 +395,52 @@ export default function App() {
     if (!stats) return null;
     
     let filtered = { ...stats };
+
+    if (selectedDate !== 'All') {
+      filtered.logDate = selectedDate;
+      filtered.stationStats = filtered.stationStats.filter(s => String(s.date) === selectedDate);
+      filtered.stnPerf = filtered.stnPerf.filter(s => String(s.date) === selectedDate);
+      
+      // Filter other logs by date if they have a date in their time field
+      const dateFilter = (item: { time: string }) => item.time.includes(selectedDate);
+      
+      filtered.tagLinkIssues = filtered.tagLinkIssues.filter(dateFilter);
+      filtered.uniqueTrainLengths = filtered.uniqueTrainLengths.filter(dateFilter);
+      filtered.trainConfigChanges = filtered.trainConfigChanges.filter(dateFilter);
+      filtered.modeDegradations = filtered.modeDegradations.filter(dateFilter);
+      filtered.brakeApplications = filtered.brakeApplications.filter(dateFilter);
+      filtered.signalOverrides = filtered.signalOverrides.filter(dateFilter);
+      filtered.sosEvents = filtered.sosEvents.filter(dateFilter);
+      filtered.maPackets = filtered.maPackets.filter(dateFilter);
+      filtered.shortPackets = filtered.shortPackets.filter(dateFilter);
+      filtered.nmsLogs = filtered.nmsLogs.filter(dateFilter);
+      filtered.stationRadioPackets = filtered.stationRadioPackets.filter(dateFilter);
+
+      // Recalculate stats for the specific date
+      if (filtered.stationStats.length > 0) {
+        filtered.locoPerformance = filtered.stationStats.reduce((acc, s) => acc + s.percentage, 0) / filtered.stationStats.length;
+        filtered.badStns = filtered.stationStats.filter(s => s.percentage < 95).map(s => s.stationId);
+        filtered.goodStns = filtered.stationStats.filter(s => s.percentage >= 95).map(s => s.stationId);
+      }
+
+      if (filtered.maPackets.length > 0) {
+        filtered.avgLag = filtered.maPackets.reduce((acc, p) => acc + p.delay, 0) / filtered.maPackets.length;
+      } else {
+        filtered.avgLag = 0;
+      }
+
+      if (filtered.nmsLogs.length > 0) {
+        const nmsMap: Record<string, number> = {};
+        filtered.nmsLogs.forEach(n => {
+          nmsMap[n.health] = (nmsMap[n.health] || 0) + 1;
+        });
+        filtered.nmsStatus = Object.entries(nmsMap).map(([name, value]) => ({ name, value }));
+        filtered.nmsFailRate = (filtered.nmsLogs.filter(n => n.health !== '32').length / filtered.nmsLogs.length) * 100;
+      } else {
+        filtered.nmsStatus = [];
+        filtered.nmsFailRate = 0;
+      }
+    }
 
     if (selectedLoco !== 'All') {
       filtered.stationStats = filtered.stationStats.filter(s => String(s.locoId) === selectedLoco);
@@ -468,6 +516,7 @@ export default function App() {
         .map(s => String(s.stationId)))] 
     : ['All'];
   const uniqueLocos = stats ? ['All', ...new Set(stats.locoIds.map(id => String(id)))] : ['All'];
+  const uniqueDates = stats ? ['All', ...stats.allDates] : ['All'];
 
   const generatePDFReport = () => {
     try {
@@ -1132,6 +1181,20 @@ export default function App() {
                   >
                     {uniqueStations.map(stn => (
                       <option key={stn} value={stn} className="bg-slate-900">{stn}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex-1 space-y-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                    <Calendar className="w-3 h-3" /> Filter by Date
+                  </label>
+                  <select 
+                    value={selectedDate}
+                    onChange={(e) => setSelectedDate(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-all"
+                  >
+                    {uniqueDates.map(date => (
+                      <option key={date} value={date} className="bg-slate-900">{date}</option>
                     ))}
                   </select>
                 </div>

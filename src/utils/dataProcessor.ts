@@ -218,11 +218,37 @@ export const processDashboardData = (
     else if (rfKeys[3] && row[rfKeys[3]]) rawTime = String(row[rfKeys[3]]);
     else if (rfKeys[5] && row[rfKeys[5]]) rawTime = String(row[rfKeys[5]]);
     
+    // Ensure date is in the time string if we have it
+    const rowDate = String(row._extractedDate || (rfDateCol && row[rfDateCol]) || '').trim();
+    if (rowDate && rowDate !== 'Unknown' && !rawTime.includes(rowDate)) {
+      rawTime = `${rowDate} ${rawTime}`;
+    }
+    
     return cleanTimeStr(rawTime);
   };
 
+  const getTrnTime = (row: any) => {
+    let rawTime = String(row[trnTimeCol] || 'N/A');
+    const rowDate = String(row._extractedDate || (trnDateCol && row[trnDateCol]) || '').trim();
+    if (rowDate && rowDate !== 'Unknown' && !rawTime.includes(rowDate)) {
+      rawTime = `${rowDate} ${rawTime}`;
+    }
+    return rawTime;
+  };
+
+  const getRadioTime = (row: any) => {
+    let rawTime = String(row[radioTimeCol] || 'N/A');
+    const rowDate = String(row._extractedDate || (radioDateCol && row[radioDateCol]) || '').trim();
+    if (rowDate && rowDate !== 'Unknown' && !rawTime.includes(rowDate)) {
+      rawTime = `${rowDate} ${rawTime}`;
+    }
+    return rawTime;
+  };
+
   const trnTimeCol = findColumn(firstTrn, 'Time', 'Timestamp', 'Date', 'DateTime', 'LogTime') || 'Time';
+  const trnDateCol = findColumn(firstTrn, 'Date', 'Log Date', 'LogDate');
   const radioTimeCol = findColumn(firstRadio, 'Time', 'Timestamp', 'Time_DT', 'LogTime') || 'Time';
+  const radioDateCol = findColumn(firstRadio, 'Date', 'Log Date', 'LogDate');
 
   // Find first valid locoId for default
   let locoId = 'N/A';
@@ -250,7 +276,7 @@ export const processDashboardData = (
   const locoIds = Array.from(allLocos);
 
   // Station Performance & Stats
-  const stnGroups: Record<string, { expected: number[]; received: number[]; percentages: number[]; times: string[]; locoId: string | number }> = {};
+  const stnGroups: Record<string, { expected: number[]; received: number[]; percentages: number[]; times: string[]; locoId: string | number; date: string }> = {};
   const expectedCol = findColumn(firstRf, 'Expected', 'Exp', 'Total', 'Expected Count') || 'Expected';
   const receivedCol = findColumn(firstRf, 'Received', 'Rec', 'SuccessCount', 'Recieved Count') || 'Received';
   const directionCol = findColumn(firstRf, 'Direction', 'Mode', 'Nominal/Reverse', 'Type', 'Nominal_Reverse') || 'Direction';
@@ -264,10 +290,11 @@ export const processDashboardData = (
     if (!isValidLocoId(rawRowLocoId)) return;
     
     const rowLocoId = String(rawRowLocoId).trim();
-    const key = `${stnId}_${direction}_${rowLocoId}`;
+    const rowDate = String(row._extractedDate || (rfDateCol && row[rfDateCol]) || 'Unknown').trim();
+    const key = `${stnId}_${direction}_${rowLocoId}_${rowDate}`;
     
     if (stnId !== undefined) {
-      if (!stnGroups[key]) stnGroups[key] = { expected: [], received: [], percentages: [], times: [], locoId: rowLocoId };
+      if (!stnGroups[key]) stnGroups[key] = { expected: [], received: [], percentages: [], times: [], locoId: rowLocoId, date: rowDate };
       stnGroups[key].expected.push(Number(row[expectedCol]) || 0);
       stnGroups[key].received.push(Number(row[receivedCol]) || 0);
       stnGroups[key].percentages.push(Number(row[percentageCol]) || 0);
@@ -276,12 +303,12 @@ export const processDashboardData = (
     }
   });
 
-  // Calculate average per station per loco for summary
-  const stnSummary: Record<string | number, { percentages: number[]; times: string[]; locoId: string | number }> = {};
+  // Calculate average per station per loco per date for summary
+  const stnSummary: Record<string | number, { percentages: number[]; times: string[]; locoId: string | number; date: string }> = {};
   Object.entries(stnGroups).forEach(([key, data]) => {
-    const [stnId, , rowLocoId] = key.split('_');
-    const summaryKey = `${stnId}_${rowLocoId}`;
-    if (!stnSummary[summaryKey]) stnSummary[summaryKey] = { percentages: [], times: [], locoId: rowLocoId };
+    const [stnId, , rowLocoId, rowDate] = key.split('_');
+    const summaryKey = `${stnId}_${rowLocoId}_${rowDate}`;
+    if (!stnSummary[summaryKey]) stnSummary[summaryKey] = { percentages: [], times: [], locoId: rowLocoId, date: rowDate };
     stnSummary[summaryKey].percentages.push(...data.percentages);
     stnSummary[summaryKey].times.push(...data.times);
   });
@@ -293,13 +320,14 @@ export const processDashboardData = (
       stationId,
       percentage: data.percentages.reduce((a, b) => a + b, 0) / data.percentages.length,
       locoId: data.locoId,
+      date: data.date,
       startTime: sortedTimes.length > 0 ? sortedTimes[0] : 'N/A',
       endTime: sortedTimes.length > 0 ? sortedTimes[sortedTimes.length - 1] : 'N/A'
     };
   });
 
   const stationStats = Object.entries(stnGroups).map(([key, data]) => {
-    const [stationId, direction] = key.split('_');
+    const [stationId, direction, , rowDate] = key.split('_');
     const totalExpected = data.expected.reduce((a, b) => a + b, 0);
     const totalReceived = data.received.reduce((a, b) => a + b, 0);
     return {
@@ -308,7 +336,8 @@ export const processDashboardData = (
       expected: totalExpected,
       received: totalReceived,
       percentage: (totalReceived / (totalExpected || 1)) * 100,
-      locoId: data.locoId
+      locoId: data.locoId,
+      date: rowDate
     };
   });
 
@@ -366,7 +395,7 @@ export const processDashboardData = (
   const shortPackets = radioData
     .filter(p => Number(p[lengthCol]) < 10 && p[lengthCol] !== undefined && isValidLocoId(p[radioLocoIdCol] || locoId))
     .map(p => ({
-      time: String(p[radioTimeCol]),
+      time: getRadioTime(p),
       type: String(p[packetTypeCol]),
       length: Number(p[lengthCol]),
       locoId: String(p[radioLocoIdCol] || locoId).trim()
@@ -376,7 +405,7 @@ export const processDashboardData = (
   const sosEvents = radioData
     .filter(p => (String(p[packetTypeCol]).toLowerCase().includes('sos') || String(p[messageCol]).toLowerCase().includes('sos')) && isValidLocoId(p[radioLocoIdCol] || locoId))
     .map(p => ({
-      time: String(p[radioTimeCol]),
+      time: getRadioTime(p),
       source: String(p[sourceCol] || 'Unknown'),
       type: String(p[packetTypeCol]),
       stationId: String(p[stnIdCol] || 'N/A'),
@@ -402,7 +431,7 @@ export const processDashboardData = (
       if (info.toLowerCase().includes('duplicatetagmissing')) errorType = "Duplicate Tag Missing";
       
       return {
-        time: String(p[radioTimeCol]),
+        time: getRadioTime(p),
         stationId: String(p[stnIdCol] || 'N/A'),
         info: info,
         error: errorType,
@@ -426,13 +455,13 @@ export const processDashboardData = (
         if (info.includes('maintagmissing')) errorType = "Main Tag Missing";
         if (info.includes('duplicatetagmissing')) errorType = "Duplicate Tag Missing";
 
-        trnTagIssues.push({
-          time: String(row[trnTimeCol] || 'N/A'),
-          stationId: String(row[findColumn(row, 'Station Id', 'StationId', 'Station_Id') || ''] || 'N/A'),
-          info: String(row[trnTagLinkCol]),
-          error: errorType,
-          locoId: String(row[trnLocoIdCol] || locoId).trim()
-        });
+      trnTagIssues.push({
+        time: getTrnTime(row),
+        stationId: String(row[findColumn(row, 'Station Id', 'StationId', 'Station_Id') || ''] || 'N/A'),
+        info: String(row[trnTagLinkCol]),
+        error: errorType,
+        locoId: String(row[trnLocoIdCol] || locoId).trim()
+      });
       }
     });
   }
@@ -469,7 +498,7 @@ export const processDashboardData = (
   });
   const nmsStatus = Object.entries(nmsStatusMap).map(([name, value]) => ({ name, value }));
   const nmsLogs = trnData?.map(row => ({
-    time: String(row[trnTimeCol] || 'N/A'),
+    time: getTrnTime(row),
     health: String(row[nmsHealthCol]),
     locoId: String(row[trnLocoIdCol] || locoId).trim()
   })) || [];
@@ -513,7 +542,7 @@ export const processDashboardData = (
                               
         if (isDegradation) {
           modeDegradations.push({
-            time: String(row[trnTimeCol] || 'N/A'),
+            time: getTrnTime(row),
             from: lastMode || (isDegradationMessage && currentAck.includes('FS_to') ? 'FS' : 'Unknown'),
             to: currentMode,
             reason: String(row[reasonCol] || row[eventCol] || currentAck || 'Mode Change'),
@@ -536,7 +565,7 @@ export const processDashboardData = (
       return hasBrake && isValidLocoId(row[trnLocoIdCol] || locoId);
     })
     .map(row => ({
-      time: String(row[trnTimeCol] || 'N/A'),
+      time: getTrnTime(row),
       type: String(row[eventCol]),
       speed: Number(row[speedCol]) || 0,
       location: String(row[locationCol] || 'N/A'),
@@ -548,7 +577,7 @@ export const processDashboardData = (
   const signalOverrides = trnData
     ?.filter(row => String(row[eventCol] || '').toLowerCase().includes('override') && isValidLocoId(row[trnLocoIdCol] || locoId))
     .map(row => ({
-      time: String(row[trnTimeCol] || 'N/A'),
+      time: getTrnTime(row),
       signalId: String(row[signalIdCol] || 'N/A'),
       status: String(row[signalStatusCol] || 'Overridden'),
       stationId: String(row[findColumn(row, 'Station Id', 'StationId', 'Station_Id') || ''] || 'N/A'),
@@ -572,7 +601,7 @@ export const processDashboardData = (
           if (!isNaN(numLen) && numLen > 0) {
             if (!uniqueTrainLengthsMap.has(numLen)) {
               uniqueTrainLengthsMap.set(numLen, { 
-                time: String(row[trnTimeCol] || 'N/A'), 
+                time: getTrnTime(row), 
                 stationId: rowStnId 
               });
             }
@@ -580,13 +609,13 @@ export const processDashboardData = (
         }
         if (lastConfig[param] && lastConfig[param] !== val) {
           trainConfigChanges.push({
-            time: String(row[trnTimeCol] || 'N/A'),
-            parameter: param,
-            oldVal: lastConfig[param],
-            newVal: val,
-            stationId: rowStnId,
-            locoId: String(row[trnLocoIdCol] || locoId).trim()
-          });
+          time: getTrnTime(row),
+          parameter: param,
+          oldVal: lastConfig[param],
+          newVal: val,
+          stationId: rowStnId,
+          locoId: String(row[trnLocoIdCol] || locoId).trim()
+        });
         }
         lastConfig[param] = val;
       }
@@ -613,7 +642,7 @@ export const processDashboardData = (
       
       if (Object.keys(packets).length > 0) {
         stationRadioPackets.push({
-          time: String(row[trnTimeCol] || 'N/A'),
+          time: getTrnTime(row),
           stationId: String(row[findColumn(row, 'Station Id', 'StationId', 'Station_Id') || ''] || 'N/A'),
           packets,
           locoId: String(row[trnLocoIdCol] || locoId).trim()
@@ -633,7 +662,7 @@ export const processDashboardData = (
       const delay = (currentTime - lastTime) / 1000;
       if (delay >= 0) { // Filter out negative delays if any
         maPacketsProcessed.push({
-          time: String(p[radioTimeCol]),
+          time: getRadioTime(p),
           delay,
           category: bucketDelay(delay),
           length: Number(p[lengthCol]) || 0,
@@ -743,15 +772,25 @@ export const processDashboardData = (
   const startTime = allTimes.length > 0 ? allTimes[0] : 'N/A';
   const endTime = allTimes.length > 0 ? allTimes[allTimes.length - 1] : 'N/A';
 
-  const logDate = rfData[0]?._extractedDate || 
-                  (rfDateCol && rfData[0]?.[rfDateCol]) ||
-                  (trnData && trnData[0]?._extractedDate) || 
-                  (radioData[0]?._extractedDate) || 
-                  null;
+  const allDatesSet = new Set<string>();
+  rfData.forEach(row => {
+    const d = row._extractedDate || (rfDateCol && row[rfDateCol]);
+    if (d) allDatesSet.add(String(d).trim());
+  });
+  trnData?.forEach(row => {
+    if (row._extractedDate) allDatesSet.add(String(row._extractedDate).trim());
+  });
+  radioData.forEach(row => {
+    if (row._extractedDate) allDatesSet.add(String(row._extractedDate).trim());
+  });
+  const allDates = Array.from(allDatesSet).sort();
+
+  const logDate = allDates.length > 0 ? allDates[0] : null;
 
   return {
     locoId,
     logDate,
+    allDates,
     locoIds,
     stnPerf,
     badStns,

@@ -24,8 +24,9 @@ export interface RadioData {
 export interface DashboardStats {
   locoId: string | number;
   logDate?: string | null;
+  allDates: string[];
   locoIds: (string | number)[];
-  stnPerf: { stationId: string | number; percentage: number; locoId: string | number }[];
+  stnPerf: { stationId: string | number; percentage: number; locoId: string | number; date?: string }[];
   badStns: (string | number)[];
   goodStns: (string | number)[];
   locoPerformance: number;
@@ -47,6 +48,7 @@ export interface DashboardStats {
     received: number; 
     percentage: number;
     locoId: string | number;
+    date?: string;
   }[];
   modeDegradations: { time: string; from: string; to: string; reason: string; lpResponse: string; stationId: string; locoId: string | number }[];
   shortPackets: { time: string; type: string; length: number; locoId: string | number }[];
