@@ -195,6 +195,12 @@ export default function App() {
       ...prev, 
       [type]: [...prev[type], ...fileArray] 
     }));
+    
+    // Clear input to allow re-selecting same files if needed
+    const inputs = document.querySelectorAll('input[type="file"]');
+    inputs.forEach(input => {
+      (input as HTMLInputElement).value = '';
+    });
   };
 
   const handleClearFiles = (type: keyof typeof files) => {
@@ -2622,7 +2628,8 @@ function FileDrop({ zone, label, onUpload, files, onClear }: { zone: string; lab
         <input
           type="file"
           multiple
-          className="absolute inset-0 opacity-0 cursor-pointer"
+          accept=".csv,.xlsx,.xls"
+          className="absolute inset-0 opacity-0 cursor-pointer z-10"
           onChange={(e) => onUpload(zone, e.target.files)}
         />
         <div className="flex flex-col items-center gap-2">

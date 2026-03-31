@@ -743,7 +743,11 @@ export const processDashboardData = (
   const startTime = allTimes.length > 0 ? allTimes[0] : 'N/A';
   const endTime = allTimes.length > 0 ? allTimes[allTimes.length - 1] : 'N/A';
 
-  const logDate = rfData[0]?._extractedDate || (trnData && trnData[0]?._extractedDate) || radioData[0]?._extractedDate || null;
+  const logDate = rfData[0]?._extractedDate || 
+                  (rfDateCol && rfData[0]?.[rfDateCol]) ||
+                  (trnData && trnData[0]?._extractedDate) || 
+                  (radioData[0]?._extractedDate) || 
+                  null;
 
   return {
     locoId,
