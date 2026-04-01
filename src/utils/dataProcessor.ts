@@ -220,7 +220,7 @@ export const processDashboardData = (
     
     // Ensure date is in the time string if we have it
     const rowDate = String(row._extractedDate || (rfDateCol && row[rfDateCol]) || '').trim();
-    if (rowDate && rowDate !== 'Unknown' && !rawTime.includes(rowDate)) {
+    if (rowDate && rowDate !== 'Unknown' && rowDate !== 'N/A' && !rawTime.includes(rowDate)) {
       rawTime = `${rowDate} ${rawTime}`;
     }
     
@@ -230,7 +230,7 @@ export const processDashboardData = (
   const getTrnTime = (row: any) => {
     let rawTime = String(row[trnTimeCol] || 'N/A');
     const rowDate = String(row._extractedDate || (trnDateCol && row[trnDateCol]) || '').trim();
-    if (rowDate && rowDate !== 'Unknown' && !rawTime.includes(rowDate)) {
+    if (rowDate && rowDate !== 'Unknown' && rowDate !== 'N/A' && !rawTime.includes(rowDate)) {
       rawTime = `${rowDate} ${rawTime}`;
     }
     return rawTime;
@@ -239,7 +239,7 @@ export const processDashboardData = (
   const getRadioTime = (row: any) => {
     let rawTime = String(row[radioTimeCol] || 'N/A');
     const rowDate = String(row._extractedDate || (radioDateCol && row[radioDateCol]) || '').trim();
-    if (rowDate && rowDate !== 'Unknown' && !rawTime.includes(rowDate)) {
+    if (rowDate && rowDate !== 'Unknown' && rowDate !== 'N/A' && !rawTime.includes(rowDate)) {
       rawTime = `${rowDate} ${rawTime}`;
     }
     return rawTime;
@@ -335,7 +335,8 @@ export const processDashboardData = (
       direction,
       expected: totalExpected,
       received: totalReceived,
-      percentage: (totalReceived / (totalExpected || 1)) * 100,
+      // Use average of percentages for consistency with user's manual calculation
+      percentage: data.percentages.reduce((a, b) => a + b, 0) / (data.percentages.length || 1),
       locoId: data.locoId,
       date: rowDate
     };
@@ -778,14 +779,157 @@ export const processDashboardData = (
     if (d) allDatesSet.add(String(d).trim());
   });
   trnData?.forEach(row => {
-    if (row._extractedDate) allDatesSet.add(String(row._extractedDate).trim());
+    const d = row._extractedDate || (trnDateCol && row[trnDateCol]);
+    if (d) allDatesSet.add(String(d).trim());
   });
   radioData.forEach(row => {
-    if (row._extractedDate) allDatesSet.add(String(row._extractedDate).trim());
+    const d = row._extractedDate || (radioDateCol && row[radioDateCol]);
+    if (d) allDatesSet.add(String(d).trim());
   });
-  const allDates = Array.from(allDatesSet).sort();
+
+  // Sort dates chronologically (handling DD/MM/YYYY format)
+  const allDates = Array.from(allDatesSet).sort((a, b) => {
+    const parseDate = (d: string) => {
+      const parts = d.split(/[-/.]/);
+      if (parts.length === 3) {
+        const day = parseInt(parts[0]);
+        const month = parseInt(parts[1]) - 1;
+        const year = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
+        return new Date(year, month, day).getTime();
+      }
+      return new Date(d).getTime() || 0;
+    };
+    return parseDate(a) - parseDate(b);
+  });
 
   const logDate = allDates.length > 0 ? allDates[0] : null;
+
+  // --- Station Radio Deep Analysis Logic ---
+  const stationFailures: Record<string | number, { count: number; totalDuration: number; locos: Set<string | number>; totalEvents: number; workingEvents: number }> = {};
+  const locoFailures: Record<string | number, { count: number; stations: Set<string | number> }> = {};
+  const criticalEvents: DashboardStats['stationDeepAnalysis']['criticalEvents'] = [];
+
+  // Identify RF Loss Events from rfData
+  rfData.forEach((row) => {
+    const stnId = row[stnIdCol];
+    const rawRowLocoId = row[locoIdCol] || locoId;
+    if (!isValidLocoId(rawRowLocoId) || stnId === undefined) return;
+    const rowLocoId = String(rawRowLocoId).trim();
+    const received = Number(row[receivedCol]) || 0;
+    const expected = Number(row[expectedCol]) || 0;
+    const percentage = Number(row[percentageCol]) || 0;
+    const time = getRfTime(row);
+
+    if (!stationFailures[stnId]) {
+      stationFailures[stnId] = { count: 0, totalDuration: 0, locos: new Set(), totalEvents: 0, workingEvents: 0 };
+    }
+    stationFailures[stnId].totalEvents++;
+    if (percentage >= 95) stationFailures[stnId].workingEvents++;
+
+    // A loss is defined as percentage < 50 or received == 0 when expected > 0
+    if (percentage < 50 || (expected > 0 && received === 0)) {
+      stationFailures[stnId].count++;
+      stationFailures[stnId].locos.add(rowLocoId);
+      
+      if (!locoFailures[rowLocoId]) {
+        locoFailures[rowLocoId] = { count: 0, stations: new Set() };
+      }
+      locoFailures[rowLocoId].count++;
+      locoFailures[rowLocoId].stations.add(stnId);
+
+      // Duration Analysis (approximate 30s per row if it's a failure)
+      const duration = 30; 
+      stationFailures[stnId].totalDuration += duration;
+
+      if (duration >= 60) {
+        criticalEvents.push({
+          time,
+          stationId: stnId,
+          locoId: rowLocoId,
+          duration,
+          type: 'Long Duration',
+          description: `Long RF loss at station ${stnId}`
+        });
+      }
+    }
+  });
+
+  // Time-based Analysis: Check for multiple trains at same time
+  const timeMap: Record<string, Set<string | number>> = {};
+  rfData.forEach(row => {
+    const time = getRfTime(row);
+    const percentage = Number(row[percentageCol]) || 0;
+    const stnId = row[stnIdCol];
+    if (percentage < 50 && time !== 'N/A') {
+      const key = `${time}_${stnId}`;
+      if (!timeMap[key]) timeMap[key] = new Set();
+      timeMap[key].add(row[locoIdCol] || locoId);
+    }
+  });
+
+  Object.entries(timeMap).forEach(([key, locos]) => {
+    if (locos.size > 1) {
+      const [time, stnId] = key.split('_');
+      criticalEvents.push({
+        time,
+        stationId: stnId,
+        locoId: 'Multiple',
+        duration: 0,
+        type: 'Multiple Trains Affected',
+        description: `${locos.size} trains affected at ${stnId} simultaneously`
+      });
+    }
+  });
+
+  const topFaultyStations = Object.entries(stationFailures)
+    .map(([stnId, data]) => {
+      const healthScore = (data.workingEvents / (data.totalEvents || 1)) * 100;
+      return {
+        stationId: stnId,
+        failureCount: data.count,
+        avgLossDuration: data.count > 0 ? data.totalDuration / data.count : 0,
+        healthScore,
+        status: (healthScore < 80 ? 'Critical' : healthScore < 90 ? 'Warning' : 'Healthy') as any,
+        affectedLocos: Array.from(data.locos)
+      };
+    })
+    .sort((a, b) => b.failureCount - a.failureCount)
+    .slice(0, 10);
+
+  const faultyLocos = Object.entries(locoFailures)
+    .map(([locoId, data]) => ({
+      locoId,
+      failureCount: data.count,
+      stationsCovered: Array.from(data.stations),
+      status: (data.count > 10 ? 'Critical' : data.count > 5 ? 'Suspect' : 'Normal') as any
+    }))
+    .sort((a, b) => b.failureCount - a.failureCount);
+
+  // Root Cause Conclusion
+  const totalStationFailures = topFaultyStations.reduce((acc, s) => acc + s.failureCount, 0);
+  const totalLocoFailures = faultyLocos.reduce((acc, l) => acc + l.failureCount, 0);
+  const stationSideWeight = totalStationFailures > 0 ? (totalStationFailures / (totalStationFailures + totalLocoFailures)) * 100 : 0;
+  const locoSideWeight = 100 - stationSideWeight;
+
+  let conclusion = "Random Failures Detected: Intermittent RF loss observed at different stations. Likely caused by interference, weak signal areas, or antenna alignment issues.";
+  if (stationSideWeight > 70) {
+    conclusion = `Common Failure (Station Side Issue): High failure counts at specific stations (${topFaultyStations.slice(0, 3).map(s => s.stationId).join(', ')}) affecting multiple trains. This confirms a primary issue at station radio systems, antenna, or power configuration.`;
+  } else if (locoSideWeight > 70) {
+    conclusion = `Single Train Failure (Loco Issue): Specific locos (${faultyLocos.slice(0, 3).map(l => l.locoId).join(', ')}) showing repeated RF loss across multiple stations. Indicates issues in onboard TCAS/RF modules or loco antenna.`;
+  } else if (stationSideWeight > 40 && locoSideWeight > 40) {
+    conclusion = "Mixed Failures: Both station-side and loco-side issues detected. Requires combined inspection of identified faulty stations and locos.";
+  }
+
+  const stationDeepAnalysis = {
+    topFaultyStations,
+    faultyLocos,
+    criticalEvents: criticalEvents.slice(0, 20),
+    rootCause: {
+      stationSide: Math.round(stationSideWeight),
+      locoSide: Math.round(locoSideWeight),
+      conclusion
+    }
+  };
 
   return {
     locoId,
@@ -817,6 +961,7 @@ export const processDashboardData = (
     stationRadioPackets,
     multiLocoBadStns,
     startTime,
-    endTime
+    endTime,
+    stationDeepAnalysis
   };
 };

@@ -72,6 +72,37 @@ export interface DashboardStats {
   }[];
   startTime: string;
   endTime: string;
+  
+  // Deep Analysis Fields
+  stationDeepAnalysis: {
+    topFaultyStations: {
+      stationId: string | number;
+      failureCount: number;
+      avgLossDuration: number;
+      healthScore: number;
+      status: 'Critical' | 'Warning' | 'Healthy';
+      affectedLocos: (string | number)[];
+    }[];
+    faultyLocos: {
+      locoId: string | number;
+      failureCount: number;
+      stationsCovered: (string | number)[];
+      status: 'Normal' | 'Suspect' | 'Critical';
+    }[];
+    criticalEvents: {
+      time: string;
+      stationId: string | number;
+      locoId: string | number;
+      duration: number;
+      type: 'Long Duration' | 'Multiple Trains Affected';
+      description: string;
+    }[];
+    rootCause: {
+      stationSide: number;
+      locoSide: number;
+      conclusion: string;
+    };
+  };
 }
 
 export const bucketDelay = (d: number) => {
