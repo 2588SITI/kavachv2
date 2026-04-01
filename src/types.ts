@@ -44,11 +44,11 @@ export interface DashboardStats {
   stationStats: { 
     stationId: string | number; 
     direction: string;
-    expected: number; 
-    received: number; 
     percentage: number;
+    expected: number;
+    received: number;
     locoId: string | number;
-    date?: string;
+    date: string;
   }[];
   modeDegradations: { time: string; from: string; to: string; reason: string; lpResponse: string; stationId: string; locoId: string | number }[];
   shortPackets: { time: string; type: string; length: number; locoId: string | number }[];
@@ -68,6 +68,17 @@ export interface DashboardStats {
     time: string;
     stationId: string;
     packets: { [key: string]: any };
+    locoId: string | number;
+  }[];
+  rawRfLogs: {
+    stationId: string | number;
+    direction: string;
+    expected: number;
+    received: number;
+    nominalPerc: number;
+    reversePerc: number;
+    time: string;
+    date: string;
     locoId: string | number;
   }[];
   startTime: string;

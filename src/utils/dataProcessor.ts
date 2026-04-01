@@ -130,7 +130,7 @@ const findColumn = (row: any, ...aliases: string[]) => {
   if (!row) return null;
   const keys = Object.keys(row);
   for (const alias of aliases) {
-    const found = keys.find(k => k.toLowerCase().replace(/\s/g, '') === alias.toLowerCase().replace(/\s/g, ''));
+    const found = keys.find(k => k.toLowerCase().replace(/\s/g, '') === (alias || '').toLowerCase().replace(/\s/g, ''));
     if (found) return found;
   }
   return null;
@@ -160,6 +160,26 @@ const parseTime = (timeStr: any) => {
 
   const d = new Date(str);
   return d.getTime();
+};
+
+const parseNumber = (val: any): number => {
+  if (val === undefined || val === null || val === '') return 0;
+  if (typeof val === 'number') return val;
+  const str = String(val).replace(/[%,]/g, '').trim();
+  const num = parseFloat(str);
+  return isNaN(num) ? 0 : num;
+};
+
+export const parseDateString = (d: string) => {
+  if (!d || d === 'Unknown' || d === 'N/A') return 0;
+  const parts = d.split(/[-/.]/);
+  if (parts.length === 3) {
+    const day = parseInt(parts[0]);
+    const month = parseInt(parts[1]) - 1;
+    const year = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
+    return new Date(year, month, day).getTime();
+  }
+  return new Date(d).getTime() || 0;
 };
 
 export const processDashboardData = (
@@ -200,6 +220,19 @@ export const processDashboardData = (
     return s;
   };
 
+  const normalizeDate = (d: string) => {
+    if (!d || d === 'Unknown' || d === 'N/A') return 'Unknown';
+    const parts = d.split(/[-/.]/);
+    if (parts.length === 3) {
+      const day = parts[0].padStart(2, '0');
+      const month = parts[1].padStart(2, '0');
+      let year = parts[2];
+      if (year.length === 2) year = `20${year}`;
+      return `${day}/${month}/${year}`;
+    }
+    return d;
+  };
+
   const getRfTime = (row: any) => {
     let rawTime = 'N/A';
     if (rfTimestampCol && row[rfTimestampCol]) rawTime = String(row[rfTimestampCol]);
@@ -219,7 +252,8 @@ export const processDashboardData = (
     else if (rfKeys[5] && row[rfKeys[5]]) rawTime = String(row[rfKeys[5]]);
     
     // Ensure date is in the time string if we have it
-    const rowDate = String(row._extractedDate || (rfDateCol && row[rfDateCol]) || '').trim();
+    const rawDate = String(row._extractedDate || (rfDateCol && row[rfDateCol]) || '').trim();
+    const rowDate = normalizeDate(rawDate);
     if (rowDate && rowDate !== 'Unknown' && rowDate !== 'N/A' && !rawTime.includes(rowDate)) {
       rawTime = `${rowDate} ${rawTime}`;
     }
@@ -229,7 +263,8 @@ export const processDashboardData = (
 
   const getTrnTime = (row: any) => {
     let rawTime = String(row[trnTimeCol] || 'N/A');
-    const rowDate = String(row._extractedDate || (trnDateCol && row[trnDateCol]) || '').trim();
+    const rawDate = String(row._extractedDate || (trnDateCol && row[trnDateCol]) || '').trim();
+    const rowDate = normalizeDate(rawDate);
     if (rowDate && rowDate !== 'Unknown' && rowDate !== 'N/A' && !rawTime.includes(rowDate)) {
       rawTime = `${rowDate} ${rawTime}`;
     }
@@ -238,7 +273,8 @@ export const processDashboardData = (
 
   const getRadioTime = (row: any) => {
     let rawTime = String(row[radioTimeCol] || 'N/A');
-    const rowDate = String(row._extractedDate || (radioDateCol && row[radioDateCol]) || '').trim();
+    const rawDate = String(row._extractedDate || (radioDateCol && row[radioDateCol]) || '').trim();
+    const rowDate = normalizeDate(rawDate);
     if (rowDate && rowDate !== 'Unknown' && rowDate !== 'N/A' && !rawTime.includes(rowDate)) {
       rawTime = `${rowDate} ${rawTime}`;
     }
@@ -276,49 +312,92 @@ export const processDashboardData = (
   const locoIds = Array.from(allLocos);
 
   // Station Performance & Stats
-  const stnGroups: Record<string, { expected: number[]; received: number[]; percentages: number[]; times: string[]; locoId: string | number; date: string }> = {};
+  const stnGroups: Record<string, { 
+    expected: number; 
+    received: number; 
+    percentages: number[];
+    times: string[]; 
+    locoId: string | number; 
+    date: string 
+  }> = {};
+  
   const expectedCol = findColumn(firstRf, 'Expected', 'Exp', 'Total', 'Expected Count') || 'Expected';
   const receivedCol = findColumn(firstRf, 'Received', 'Rec', 'SuccessCount', 'Recieved Count') || 'Received';
   const directionCol = findColumn(firstRf, 'Direction', 'Mode', 'Nominal/Reverse', 'Type', 'Nominal_Reverse') || 'Direction';
 
+  const seenRfRows = new Set<string>();
+  
   rfData.forEach((row) => {
-    const stnId = row[stnIdCol];
-    const direction = String(row[directionCol] || 'N/A');
+    const stnId = String(row[stnIdCol] || '').trim();
+    if (!stnId) return;
+    
+    const rawDirection = String(row[directionCol] || 'N/A');
+    const direction = rawDirection.toLowerCase().includes('nominal') ? 'Nominal' : 
+                      rawDirection.toLowerCase().includes('reverse') ? 'Reverse' : rawDirection;
     const rawRowLocoId = row[locoIdCol] || locoId;
     
     // Skip invalid loco IDs
     if (!isValidLocoId(rawRowLocoId)) return;
     
     const rowLocoId = String(rawRowLocoId).trim();
-    const rowDate = String(row._extractedDate || (rfDateCol && row[rfDateCol]) || 'Unknown').trim();
-    const key = `${stnId}_${direction}_${rowLocoId}_${rowDate}`;
+    const rawDate = String(row._extractedDate || (rfDateCol && row[rfDateCol]) || 'Unknown').trim();
+    const rowDateNormalized = normalizeDate(rawDate);
+    const rowTime = getRfTime(row);
     
-    if (stnId !== undefined) {
-      if (!stnGroups[key]) stnGroups[key] = { expected: [], received: [], percentages: [], times: [], locoId: rowLocoId, date: rowDate };
-      stnGroups[key].expected.push(Number(row[expectedCol]) || 0);
-      stnGroups[key].received.push(Number(row[receivedCol]) || 0);
-      stnGroups[key].percentages.push(Number(row[percentageCol]) || 0);
-      const rowTime = getRfTime(row);
-      if (rowTime !== 'N/A') stnGroups[key].times.push(rowTime);
-    }
+    // Deduplicate: same loco, same station, same direction, same time, same date
+    const rowKey = `${rowLocoId}_${stnId}_${direction}_${rowTime}_${rowDateNormalized}`;
+    if (seenRfRows.has(rowKey)) return;
+    seenRfRows.add(rowKey);
+
+    const key = `${stnId}_${direction}_${rowLocoId}_${rowDateNormalized}`;
+    
+    if (!stnGroups[key]) stnGroups[key] = { 
+      expected: 0, received: 0, 
+      percentages: [],
+      times: [], locoId: rowLocoId, date: rowDateNormalized 
+    };
+    
+    const exp = parseNumber(row[expectedCol]);
+    const rec = parseNumber(row[receivedCol]);
+    const perc = parseNumber(row[percentageCol]) || (exp > 0 ? (rec / exp) * 100 : 0);
+    
+    stnGroups[key].expected += exp;
+    stnGroups[key].received += rec;
+    stnGroups[key].percentages.push(perc);
+    
+    if (rowTime !== 'N/A') stnGroups[key].times.push(rowTime);
   });
 
-  // Calculate average per station per loco per date for summary
-  const stnSummary: Record<string | number, { percentages: number[]; times: string[]; locoId: string | number; date: string }> = {};
-  Object.entries(stnGroups).forEach(([key, data]) => {
-    const [stnId, , rowLocoId, rowDate] = key.split('_');
-    const summaryKey = `${stnId}_${rowLocoId}_${rowDate}`;
-    if (!stnSummary[summaryKey]) stnSummary[summaryKey] = { percentages: [], times: [], locoId: rowLocoId, date: rowDate };
-    stnSummary[summaryKey].percentages.push(...data.percentages);
-    stnSummary[summaryKey].times.push(...data.times);
-  });
+  const stationStats = Object.entries(stnGroups).map(([key, data]) => {
+    const [stationId, direction] = key.split('_');
+    const totalPercSum = data.percentages.reduce((a, b) => a + b, 0);
+    const rowCount = data.percentages.length;
+    const percentage = rowCount > 0 ? totalPercSum / rowCount : 0;
 
-  const stnPerf = Object.entries(stnSummary).map(([key, data]) => {
-    const [stationId] = key.split('_');
-    const sortedTimes = [...data.times].sort();
     return {
       stationId,
-      percentage: data.percentages.reduce((a, b) => a + b, 0) / data.percentages.length,
+      direction,
+      percentage,
+      expected: data.expected,
+      received: data.received,
+      locoId: data.locoId,
+      date: data.date,
+      rowCount,
+      totalPercSum
+    };
+  });
+
+  const stnPerf = Object.entries(stnGroups).map(([key, data]) => {
+    const [stationId] = key.split('_');
+    const sortedTimes = [...data.times].sort();
+    
+    const percentage = data.percentages.length > 0 
+      ? data.percentages.reduce((a, b) => a + b, 0) / data.percentages.length 
+      : 0;
+
+    return {
+      stationId,
+      percentage,
       locoId: data.locoId,
       date: data.date,
       startTime: sortedTimes.length > 0 ? sortedTimes[0] : 'N/A',
@@ -326,21 +405,26 @@ export const processDashboardData = (
     };
   });
 
-  const stationStats = Object.entries(stnGroups).map(([key, data]) => {
-    const [stationId, direction, , rowDate] = key.split('_');
-    const totalExpected = data.expected.reduce((a, b) => a + b, 0);
-    const totalReceived = data.received.reduce((a, b) => a + b, 0);
-    return {
-      stationId,
-      direction,
-      expected: totalExpected,
-      received: totalReceived,
-      // Use average of percentages for consistency with user's manual calculation
-      percentage: data.percentages.reduce((a, b) => a + b, 0) / (data.percentages.length || 1),
-      locoId: data.locoId,
-      date: rowDate
-    };
-  });
+  const rawRfLogs = rfData
+    .filter(row => isValidLocoId(row[locoIdCol] || locoId))
+    .map(row => {
+      const direction = String(row[directionCol] || 'N/A');
+      const percentage = Number(row[percentageCol]) || 0;
+      const isNominal = direction.toLowerCase().includes('nominal');
+      const isReverse = direction.toLowerCase().includes('reverse');
+      
+      return {
+        stationId: String(row[stnIdCol] || 'N/A'),
+        direction,
+        expected: Number(row[expectedCol]) || 0,
+        received: Number(row[receivedCol]) || 0,
+        nominalPerc: isNominal ? percentage : 0,
+        reversePerc: isReverse ? percentage : 0,
+        time: getRfTime(row),
+        date: normalizeDate(String(row._extractedDate || (rfDateCol && row[rfDateCol]) || 'Unknown').trim()),
+        locoId: String(row[locoIdCol] || locoId).trim()
+      };
+    });
 
   const badStns = Array.from(new Set(stnPerf.filter((s) => s.percentage < 95).map((s) => s.stationId)));
   const goodStns = Array.from(new Set(stnPerf.filter((s) => s.percentage >= 98).map((s) => s.stationId)));
@@ -375,11 +459,11 @@ export const processDashboardData = (
       locoDetails: data.locoDetails
     }));
 
-  const locoPerformance = rfData.length > 0
-    ? rfData
-        .filter(row => isValidLocoId(row[locoIdCol] || locoId))
-        .reduce((acc, row) => acc + (Number(row[percentageCol]) || 0), 0) / 
-        (rfData.filter(row => isValidLocoId(row[locoIdCol] || locoId)).length || 1)
+  const rfFiltered = rfData.filter(row => isValidLocoId(row[locoIdCol] || locoId));
+  const totalExp = rfFiltered.reduce((acc, row) => acc + parseNumber(row[expectedCol]), 0);
+  const totalRec = rfFiltered.reduce((acc, row) => acc + parseNumber(row[receivedCol]), 0);
+  const locoPerformance = stationStats.length > 0 
+    ? stationStats.reduce((acc, s) => acc + s.percentage, 0) / stationStats.length 
     : 0;
 
   // Radio Data Mapping
@@ -787,20 +871,8 @@ export const processDashboardData = (
     if (d) allDatesSet.add(String(d).trim());
   });
 
-  // Sort dates chronologically (handling DD/MM/YYYY format)
-  const allDates = Array.from(allDatesSet).sort((a, b) => {
-    const parseDate = (d: string) => {
-      const parts = d.split(/[-/.]/);
-      if (parts.length === 3) {
-        const day = parseInt(parts[0]);
-        const month = parseInt(parts[1]) - 1;
-        const year = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
-        return new Date(year, month, day).getTime();
-      }
-      return new Date(d).getTime() || 0;
-    };
-    return parseDate(a) - parseDate(b);
-  });
+  // Sort dates chronologically
+  const allDates = Array.from(allDatesSet).sort((a, b) => parseDateString(a) - parseDateString(b));
 
   const logDate = allDates.length > 0 ? allDates[0] : null;
 
@@ -950,6 +1022,7 @@ export const processDashboardData = (
     intervalDist,
     diagnosticAdvice,
     stationStats,
+    rawRfLogs,
     modeDegradations,
     shortPackets,
     brakeApplications,

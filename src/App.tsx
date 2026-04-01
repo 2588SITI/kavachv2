@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, Component, ReactNode } from 'react';
+import React, { useState } from 'react';
 import { 
   Shield, 
   Upload, 
@@ -17,24 +17,10 @@ import {
   Settings,
   AlertTriangle,
   ArrowRight,
-  ArrowLeft,
-  RotateCcw,
   Zap,
   MapPin,
   Download,
-  FileText,
-  LogOut,
-  LogIn,
-  History,
-  Trash2,
-  Calendar,
-  FileSearch,
-  ChevronRight,
-  ChevronDown,
-  Flag,
-  MessageSquare,
-  Radio,
-  X
+  FileText
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -49,367 +35,51 @@ import {
   Cell,
   LineChart,
   Line,
-  LabelList,
-  AreaChart,
-  Area,
-  Legend
+  LabelList
 } from 'recharts';
-import { parseFile, processDashboardData } from './utils/dataProcessor';
+import { parseFile, processDashboardData, parseDateString } from './utils/dataProcessor';
 import { DashboardStats } from './types';
 import { cn } from './utils/cn';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { 
-  auth, 
-  signIn, 
-  signOut, 
-  onAuthStateChanged, 
-  User, 
-  db, 
-  collection, 
-  addDoc,
-  query,
-  where,
-  getDocs,
-  orderBy,
-  limit,
-  doc,
-  getDocFromServer,
-  updateDoc,
-  deleteDoc,
-  handleFirestoreError,
-  OperationType,
-  storage,
-  ref,
-  uploadBytes,
-  getDownloadURL
-} from './firebase';
-import { format, startOfDay, endOfDay } from 'date-fns';
-
-class ErrorBoundary extends Component<any, any> {
-  constructor(props: any) {
-    super(props);
-    (this as any).state = { hasError: false, error: null };
-  }
-
-  static getDerivedStateFromError(error: any) {
-    return { hasError: true, error };
-  }
-
-  render() {
-    if ((this as any).state.hasError) {
-      let errorMessage = "Kuch galat ho gaya hai.";
-      try {
-        const parsed = JSON.parse((this as any).state.error.message);
-        if (parsed.error && parsed.error.includes('Missing or insufficient permissions')) {
-          errorMessage = "Aapke paas is data ko access karne ki permission nahi hai.";
-        }
-      } catch (e) {
-        // Not a JSON error
-      }
-
-      return (
-        <div className="h-screen flex items-center justify-center bg-slate-950 text-white p-8">
-          <div className="glass-card p-8 rounded-2xl max-w-md text-center space-y-4 border border-rose-500/30">
-            <AlertTriangle className="w-12 h-12 text-rose-500 mx-auto" />
-            <h2 className="text-xl font-bold">Error Occurred</h2>
-            <p className="text-slate-400 text-sm">{errorMessage}</p>
-            <button 
-              onClick={() => window.location.reload()}
-              className="px-6 py-2 bg-emerald-500 rounded-lg font-bold text-sm"
-            >
-              Reload Page
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return (this as any).props.children;
-  }
-}
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [isAuthReady, setIsAuthReady] = useState(false);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [files, setFiles] = useState<{ rf: File[]; trn: File[]; radio: File[] }>({
+  const [files, setFiles] = useState<{ rf: File[]; trn: File[]; radio: File | null }>({
     rf: [],
     trn: [],
-    radio: [],
+    radio: null,
   });
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [activeTab, setActiveTab] = useState('summary');
   const [tagSearch, setTagSearch] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedStation, setSelectedStation] = useState<string>('All');
   const [selectedLoco, setSelectedLoco] = useState<string>('All');
-  const [selectedDate, setSelectedDate] = useState<string>('All');
   const [startDate, setStartDate] = useState<string>('All');
   const [endDate, setEndDate] = useState<string>('All');
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [loginError, setLoginError] = useState<string | null>(null);
 
-  const handleLogin = async () => {
-    setIsLoggingIn(true);
-    setLoginError(null);
-    try {
-      await signIn();
-    } catch (error: any) {
-      console.error("Login Error:", error);
-      const currentOrigin = window.location.origin;
-      setLoginError(`${error.message || "Failed to login."} (Current Origin: ${currentOrigin}). Please ensure this domain is added to your Firebase Authorized Domains.`);
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    try {
-      await signOut();
-    } catch (error) {
-      console.error("Logout Error:", error);
-    }
-  };
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
-      setIsAuthReady(true);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Test connection to Firestore
-  useEffect(() => {
-    const testConnection = async () => {
-      try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration.");
-        }
-      }
-    };
-    testConnection();
-  }, []);
-
-  const handleFileUpload = async (type: keyof typeof files, newFiles: FileList | null) => {
-    if (!newFiles) return;
-    setAnalysisError(null);
-    const fileArray = Array.from(newFiles);
-    setFiles((prev) => ({ 
-      ...prev, 
-      [type]: [...prev[type], ...fileArray] 
-    }));
-    
-    // Clear input to allow re-selecting same files if needed
-    const inputs = document.querySelectorAll('input[type="file"]');
-    inputs.forEach(input => {
-      (input as HTMLInputElement).value = '';
-    });
-  };
-
-  const handleClearFiles = (type: keyof typeof files) => {
-    setAnalysisError(null);
-    setFiles((prev) => ({ ...prev, [type]: [] }));
-  };
-
-  const truncateStats = (stats: DashboardStats): DashboardStats => {
-    const MAX_LOGS = 200;
-    return {
-      ...stats,
-      maPackets: stats.maPackets.slice(0, MAX_LOGS),
-      nmsLogs: stats.nmsLogs.slice(0, MAX_LOGS),
-      stationRadioPackets: stats.stationRadioPackets.slice(0, MAX_LOGS),
-      modeDegradations: stats.modeDegradations.slice(0, MAX_LOGS),
-      shortPackets: stats.shortPackets.slice(0, MAX_LOGS),
-      brakeApplications: stats.brakeApplications.slice(0, MAX_LOGS),
-      signalOverrides: stats.signalOverrides.slice(0, MAX_LOGS),
-      sosEvents: stats.sosEvents.slice(0, MAX_LOGS),
-      trainConfigChanges: stats.trainConfigChanges.slice(0, MAX_LOGS),
-      tagLinkIssues: stats.tagLinkIssues.slice(0, MAX_LOGS),
-    };
-  };
-
-  const safeParseDate = (dateStr: string | null | undefined): Date | null => {
-    if (!dateStr || dateStr === 'N/A') return null;
-    let str = String(dateStr).trim();
-    
-    // If it's just HH:mm:ss, prepend a dummy date to make it parseable
-    if (str.match(/^\d{1,2}:\d{1,2}:\d{1,2}$/)) {
-      str = `${format(new Date(), 'yyyy-MM-dd')} ${str}`;
-    }
-
-    // Handle DD/MM/YYYY or DD-MM-YYYY formats
-    const dmyRegex = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})(.*)$/;
-    const match = str.match(dmyRegex);
-    if (match) {
-      const day = match[1].padStart(2, '0');
-      const month = match[2].padStart(2, '0');
-      let year = match[3];
-      if (year.length === 2) year = `20${year}`;
-      const rest = match[4] || '';
-      str = `${year}-${month}-${day}${rest}`;
-    }
-    
-    const d = new Date(str);
-    return isNaN(d.getTime()) ? null : d;
-  };
-
-  const saveAnalysisToHistory = async (processedStats: DashboardStats, currentFiles: { rf: File[]; trn: File[]; radio: File[] }) => {
-    if (!user) return;
-    
-    setIsSaving(true);
-    const path = 'reports';
-    try {
-      // Try to use the date from the file if available, otherwise fallback to current time
-      let reportDate = new Date().toISOString();
-      const parsedDate = processedStats.logDate ? safeParseDate(processedStats.logDate) : safeParseDate(processedStats.startTime);
-      if (parsedDate) {
-        reportDate = parsedDate.toISOString();
-      }
-      
-      // Truncate large data to avoid Firestore 1MB limit
-      const truncated = truncateStats(processedStats);
-      
-      // Upload original files to Firebase Storage
-      const fileUploads: { name: string; url: string; type: string }[] = [];
-      const allFiles = [
-        ...currentFiles.rf.map(f => ({ file: f, type: 'RF' })),
-        ...currentFiles.trn.map(f => ({ file: f, type: 'TRN' })),
-        ...currentFiles.radio.map(f => ({ file: f, type: 'RADIO' }))
-      ];
-      
-      for (const { file, type } of allFiles) {
-        try {
-          // Use a unique path for each upload
-          const fileRef = ref(storage, `logs/${user.uid}/${Date.now()}_${file.name}`);
-          
-          // Use uploadBytes with metadata
-          const metadata = {
-            contentType: file.type || 'application/vnd.ms-excel',
-            customMetadata: {
-              'uploadedBy': user.uid,
-              'originalName': file.name,
-              'locoId': String(processedStats.locoId)
-            }
-          };
-          
-          const snapshot = await uploadBytes(fileRef, file, metadata);
-          const url = await getDownloadURL(snapshot.ref);
-          
-          fileUploads.push({
-            name: file.name,
-            url: url,
-            type: type
-          });
-        } catch (uploadErr: any) {
-          console.error(`Error uploading ${file.name}:`, uploadErr);
-          // If it's a retry limit error, it's likely a CORS or connection issue
-          if (uploadErr.code === 'storage/retry-limit-exceeded') {
-            console.warn("Storage upload failed due to connection/CORS issues. Please check if Firebase Storage is enabled and CORS is configured.");
-          }
-        }
-      }
-      
-      // Save main report
-      await addDoc(collection(db, path), {
-        locoId: processedStats.locoId,
-        date: reportDate,
-        overallPerformance: processedStats.locoPerformance,
-        nmsFailRate: processedStats.nmsFailRate,
-        avgLag: processedStats.avgLag,
-        badStations: processedStats.badStns,
-        userId: user.uid,
-        notes: "",
-        status: "Pending",
-        isFlagged: false,
-        fullData: JSON.stringify(truncated),
-        originalFiles: fileUploads
-      });
-
-      // Save station history for bad stations
-      const stationHistoryPromises = processedStats.stationStats
-        .filter(s => s.percentage < 95)
-        .map(s => addDoc(collection(db, 'station_history'), {
-          stationId: s.stationId,
-          date: reportDate,
-          locoId: s.locoId,
-          percentage: s.percentage,
-          received: s.received,
-          expected: s.expected,
-          userId: user.uid
-        }));
-
-      await Promise.all(stationHistoryPromises);
-      console.log("Analysis saved to history successfully with files:", fileUploads.length);
-    } catch (error) {
-      console.error("Save to History Error:", error);
-      // Don't throw here to avoid blocking the UI if save fails
-      // handleFirestoreError(error, OperationType.WRITE, path);
-    } finally {
-      setIsSaving(false);
+  const handleFileUpload = (type: keyof typeof files, uploaded: File | FileList) => {
+    if (type === 'radio') {
+      const file = uploaded instanceof FileList ? uploaded[0] : uploaded;
+      setFiles((prev) => ({ ...prev, radio: file }));
+    } else {
+      const newFiles = uploaded instanceof FileList ? Array.from(uploaded) : [uploaded];
+      setFiles((prev) => ({ ...prev, [type]: [...prev[type as 'rf' | 'trn'], ...newFiles] }));
     }
   };
 
   const analyzeData = async () => {
-    const fileCount = files.rf.length + files.trn.length + files.radio.length;
-    if (fileCount < 1) {
-      setAnalysisError("Please upload at least one RFCOMM log file.");
-      return;
-    }
+    if (files.rf.length === 0 && files.trn.length === 0) return;
     
-    if (files.rf.length === 0) {
-      setAnalysisError("RFCOMM logs are required for core analysis.");
-      return;
-    }
+    const rfData = (await Promise.all(files.rf.map(f => parseFile(f)))).flat();
+    const trnData = files.trn.length > 0 ? (await Promise.all(files.trn.map(f => parseFile(f)))).flat() : null;
+    const radioData = files.radio ? await parseFile(files.radio) : [];
     
-    setIsAnalyzing(true);
-    setAnalysisError(null);
-    try {
-      const rfPromises = files.rf.map(f => parseFile(f));
-      const trnPromises = files.trn.map(f => parseFile(f));
-      const radioPromises = files.radio.map(f => parseFile(f));
-
-      const rfResults = await Promise.all(rfPromises);
-      const trnResults = await Promise.all(trnPromises);
-      const radioResults = await Promise.all(radioPromises);
-
-      const rf = rfResults.flat();
-      const trn = trnResults.length > 0 ? trnResults.flat() : null;
-      const radio = radioResults.flat();
-
-      if (rf.length === 0) {
-        throw new Error("No valid data found in RFCOMM logs.");
-      }
-
-      const processed = processDashboardData(rf, trn, radio);
-      setStats(processed);
-      setSelectedStation('All');
-      setSelectedLoco('All');
-      setSelectedDate('All');
-
-      if (user) {
-        // Run save with a timeout to prevent hanging the UI indefinitely
-        try {
-          const savePromise = saveAnalysisToHistory(processed, files);
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("Save timeout")), 30000)
-          );
-          
-          await Promise.race([savePromise, timeoutPromise]);
-        } catch (saveErr) {
-          console.error("Background save failed or timed out:", saveErr);
-        }
-      }
-    } catch (error: any) {
-      console.error("Analysis Error:", error);
-      setAnalysisError(error.message || "An error occurred during analysis. Please check your file formats.");
-    } finally {
-      setIsAnalyzing(false);
-      setIsSaving(false); // Double check to ensure saving overlay is gone
-    }
+    const processed = processDashboardData(rfData, trnData, radioData);
+    setStats(processed);
+    setSelectedStation('All');
+    setSelectedLoco('All');
+    setStartDate('All');
+    setEndDate('All');
   };
 
   const getFilteredStats = (): DashboardStats | null => {
@@ -417,97 +87,34 @@ export default function App() {
     
     let filtered = { ...stats };
 
-    if (selectedDate !== 'All' || (startDate !== 'All' && endDate !== 'All')) {
-      // Range filtering helper
-      const parseDate = (d: string) => {
-        const parts = d.split(/[-/.]/);
-        if (parts.length === 3) {
-          const day = parseInt(parts[0]);
-          const month = parseInt(parts[1]) - 1;
-          const year = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
-          return new Date(year, month, day).getTime();
-        }
-        return new Date(d).getTime() || 0;
+    // Date Range Filtering
+    if (startDate !== 'All' || endDate !== 'All') {
+      const startT = startDate !== 'All' ? parseDateString(startDate) : 0;
+      const endT = endDate !== 'All' ? parseDateString(endDate) : Infinity;
+
+      const filterByDate = (item: any) => {
+        if (!item.date) return true;
+        const itemT = parseDateString(item.date);
+        return itemT >= startT && itemT <= endT;
       };
 
-      const isWithinRange = (timeStr: string) => {
-        if (selectedDate !== 'All') return timeStr.includes(selectedDate);
-        
-        const itemTime = parseDate(timeStr);
-        const start = parseDate(startDate);
-        const end = parseDate(endDate);
-        
-        return itemTime >= start && itemTime <= end;
-      };
+      filtered.stationStats = filtered.stationStats.filter(filterByDate);
+      filtered.stnPerf = filtered.stnPerf.filter(filterByDate);
+      filtered.tagLinkIssues = filtered.tagLinkIssues.filter(filterByDate);
+      filtered.uniqueTrainLengths = filtered.uniqueTrainLengths.filter(filterByDate);
+      filtered.trainConfigChanges = filtered.trainConfigChanges.filter(filterByDate);
+      filtered.modeDegradations = filtered.modeDegradations.filter(filterByDate);
+      filtered.brakeApplications = filtered.brakeApplications.filter(filterByDate);
+      filtered.signalOverrides = filtered.signalOverrides.filter(filterByDate);
+      filtered.sosEvents = filtered.sosEvents.filter(filterByDate);
+      filtered.maPackets = filtered.maPackets.filter(filterByDate);
+      filtered.shortPackets = filtered.shortPackets.filter(filterByDate);
+      filtered.nmsLogs = filtered.nmsLogs.filter(filterByDate);
+      filtered.rawRfLogs = filtered.rawRfLogs.filter(filterByDate);
 
-      filtered.logDate = selectedDate !== 'All' ? selectedDate : `${startDate} to ${endDate}`;
-      
-      filtered.stationStats = filtered.stationStats.filter(s => {
-        if (selectedDate !== 'All') return String(s.date) === selectedDate;
-        const sTime = parseDate(String(s.date));
-        return sTime >= parseDate(startDate) && sTime <= parseDate(endDate);
-      });
-
-      filtered.stnPerf = filtered.stnPerf.filter(s => {
-        if (selectedDate !== 'All') return String(s.date) === selectedDate;
-        const sTime = parseDate(String(s.date));
-        return sTime >= parseDate(startDate) && sTime <= parseDate(endDate);
-      });
-      
-      // Filter other logs by date if they have a date in their time field
-      const dateFilter = (item: { time: string }) => isWithinRange(item.time);
-      
-      filtered.tagLinkIssues = filtered.tagLinkIssues.filter(dateFilter);
-      filtered.uniqueTrainLengths = filtered.uniqueTrainLengths.filter(dateFilter);
-      filtered.trainConfigChanges = filtered.trainConfigChanges.filter(dateFilter);
-      filtered.modeDegradations = filtered.modeDegradations.filter(dateFilter);
-      filtered.brakeApplications = filtered.brakeApplications.filter(dateFilter);
-      filtered.signalOverrides = filtered.signalOverrides.filter(dateFilter);
-      filtered.sosEvents = filtered.sosEvents.filter(dateFilter);
-      filtered.maPackets = filtered.maPackets.filter(dateFilter);
-      filtered.shortPackets = filtered.shortPackets.filter(dateFilter);
-      filtered.nmsLogs = filtered.nmsLogs.filter(dateFilter);
-      filtered.stationRadioPackets = filtered.stationRadioPackets.filter(dateFilter);
-
-      // Filter Deep Analysis Critical Events
-      if (filtered.stationDeepAnalysis) {
-        filtered.stationDeepAnalysis.criticalEvents = filtered.stationDeepAnalysis.criticalEvents.filter(e => isWithinRange(e.time));
-        
-        // Filter faulty stations and locos based on the filtered stationStats
-        const activeStations = new Set(filtered.stationStats.map(s => String(s.stationId)));
-        const activeLocos = new Set(filtered.stationStats.map(s => String(s.locoId)));
-
-        filtered.stationDeepAnalysis.topFaultyStations = filtered.stationDeepAnalysis.topFaultyStations
-          .filter(s => activeStations.has(String(s.stationId)));
-        
-        filtered.stationDeepAnalysis.faultyLocos = filtered.stationDeepAnalysis.faultyLocos
-          .filter(l => activeLocos.has(String(l.locoId)));
-      }
-
-      // Recalculate stats for the specific date or range
-      if (filtered.stationStats.length > 0) {
-        filtered.locoPerformance = filtered.stationStats.reduce((acc, s) => acc + s.percentage, 0) / filtered.stationStats.length;
-        filtered.badStns = Array.from(new Set(filtered.stationStats.filter(s => s.percentage < 95).map(s => s.stationId)));
-        filtered.goodStns = Array.from(new Set(filtered.stationStats.filter(s => s.percentage >= 95).map(s => s.stationId)));
-      }
-
-      if (filtered.maPackets.length > 0) {
-        filtered.avgLag = filtered.maPackets.reduce((acc, p) => acc + p.delay, 0) / filtered.maPackets.length;
-      } else {
-        filtered.avgLag = 0;
-      }
-
-      if (filtered.nmsLogs.length > 0) {
-        const nmsMap: Record<string, number> = {};
-        filtered.nmsLogs.forEach(n => {
-          nmsMap[n.health] = (nmsMap[n.health] || 0) + 1;
-        });
-        filtered.nmsStatus = Object.entries(nmsMap).map(([name, value]) => ({ name, value }));
-        filtered.nmsFailRate = (filtered.nmsLogs.filter(n => n.health !== '32').length / filtered.nmsLogs.length) * 100;
-      } else {
-        filtered.nmsStatus = [];
-        filtered.nmsFailRate = 0;
-      }
+      // Update display duration
+      if (startDate !== 'All') filtered.startTime = startDate;
+      if (endDate !== 'All') filtered.endTime = endDate;
     }
 
     if (selectedLoco !== 'All') {
@@ -526,13 +133,6 @@ export default function App() {
       
       // Update primary locoId for display
       filtered.locoId = selectedLoco;
-
-      // Recalculate loco performance for the specific loco
-      if (filtered.stationStats.length > 0) {
-        filtered.locoPerformance = filtered.stationStats.reduce((acc, s) => acc + s.percentage, 0) / filtered.stationStats.length;
-        filtered.badStns = filtered.stationStats.filter(s => s.percentage < 95).map(s => s.stationId);
-        filtered.goodStns = filtered.stationStats.filter(s => s.percentage >= 95).map(s => s.stationId);
-      }
 
       // Recalculate Radio Lag
       if (filtered.maPackets.length > 0) {
@@ -567,11 +167,43 @@ export default function App() {
       filtered.brakeApplications = filtered.brakeApplications.filter(b => String(b.stationId) === selectedStation);
       filtered.signalOverrides = filtered.signalOverrides.filter(s => String(s.stationId) === selectedStation);
       filtered.sosEvents = filtered.sosEvents.filter(s => String(s.stationId) === selectedStation);
+    }
+
+    // Recalculate loco performance and station lists after all filters
+    if (filtered.stationStats.length > 0) {
+      // Aggregate by station and direction for the final view
+      const aggregated: Record<string, any> = {};
+      filtered.stationStats.forEach(s => {
+        const key = `${s.stationId}_${s.direction}`;
+        if (!aggregated[key]) {
+          aggregated[key] = { ...s, totalRowCount: s.rowCount, totalPercSum: s.totalPercSum, totalExp: s.expected, totalRec: s.received };
+        } else {
+          aggregated[key].totalRowCount += s.rowCount;
+          aggregated[key].totalPercSum += s.totalPercSum;
+          aggregated[key].totalExp += s.expected;
+          aggregated[key].totalRec += s.received;
+        }
+      });
+
+      filtered.stationStats = Object.values(aggregated).map(s => ({
+        ...s,
+        percentage: s.totalPercSum / s.totalRowCount,
+        expected: s.totalExp,
+        received: s.totalRec
+      }));
+
+      const totalExpAll = filtered.stationStats.reduce((acc, s) => acc + s.expected, 0);
+      const totalRecAll = filtered.stationStats.reduce((acc, s) => acc + s.received, 0);
       
-      // Recalculate loco performance for the specific station
-      if (filtered.stationStats.length > 0) {
-        filtered.locoPerformance = filtered.stationStats.reduce((acc, s) => acc + s.percentage, 0) / filtered.stationStats.length;
-      }
+      const totalOverallPercSum = filtered.stationStats.reduce((acc, s) => acc + s.totalPercSum, 0);
+      const totalOverallRowCount = filtered.stationStats.reduce((acc, s) => acc + s.totalRowCount, 0);
+      
+      filtered.locoPerformance = totalOverallRowCount > 0 
+        ? totalOverallPercSum / totalOverallRowCount 
+        : 0;
+      
+      filtered.badStns = Array.from(new Set(filtered.stationStats.filter(s => s.percentage < 95).map(s => String(s.stationId))));
+      filtered.goodStns = Array.from(new Set(filtered.stationStats.filter(s => s.percentage >= 95).map(s => String(s.stationId))));
     }
 
     return filtered;
@@ -584,7 +216,6 @@ export default function App() {
         .map(s => String(s.stationId)))] 
     : ['All'];
   const uniqueLocos = stats ? ['All', ...new Set(stats.locoIds.map(id => String(id)))] : ['All'];
-  const uniqueDates = stats ? ['All', ...stats.allDates] : ['All'];
 
   const generatePDFReport = () => {
     try {
@@ -677,6 +308,7 @@ export default function App() {
       doc.save(`Kavach_Report_Loco_${filteredStats.locoId}${selectedStation !== 'All' ? '_Stn_' + selectedStation : ''}.pdf`);
     } catch (error) {
       console.error("PDF Generation Error:", error);
+      alert("Report generate karne mein samasya aayi hai. Kripya console check karein.");
     }
   };
 
@@ -685,7 +317,7 @@ export default function App() {
     if (!filteredStats) return;
 
     if (selectedLoco === 'All') {
-      console.warn("Please select a specific Loco ID for failure analysis letter.");
+      alert("Kripya ek specific Loco ID select karein failure analysis letter ke liye.");
       return;
     }
 
@@ -951,59 +583,19 @@ export default function App() {
       doc.save(`Failure_Analysis_Letter_Loco_${filteredStats.locoId}_${date.replace(/\//g, '-')}.pdf`);
     } catch (error) {
       console.error("Letter Generation Error:", error);
+      alert("Letter generate karne mein samasya aayi hai.");
     }
   };
 
   return (
-    <ErrorBoundary>
-      <div className="flex h-screen relative font-sans">
-      {/* Loading Overlays */}
-      {(isAnalyzing || isSaving) && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
-          <div className="glass-card p-10 rounded-3xl border border-white/10 max-w-md w-full text-center space-y-6 shadow-2xl shadow-emerald-500/10 animate-in zoom-in-95 duration-300">
-            <div className="relative mx-auto w-24 h-24">
-              <div className="absolute inset-0 border-4 border-emerald-500/20 rounded-full" />
-              <div className="absolute inset-0 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-              <div className="absolute inset-0 flex items-center justify-center">
-                {isSaving ? <Database className="w-10 h-10 text-emerald-400 animate-pulse" /> : <Activity className="w-10 h-10 text-emerald-400 animate-pulse" />}
-              </div>
-            </div>
-            
-            <div className="space-y-3">
-              <h3 className="text-2xl font-bold text-white tracking-tight">
-                {isSaving ? "Saving Analysis..." : "Analyzing Data..."}
-              </h3>
-              <p className="text-slate-400 text-sm leading-relaxed">
-                {isSaving 
-                  ? "Uploading original log files and saving report to history. Please do not close this window."
-                  : "Processing RF, TRN, and Radio logs to generate comprehensive technical diagnostics."}
-              </p>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-                <div className="h-full bg-emerald-500 animate-progress" style={{ width: '100%' }} />
-              </div>
-              <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest">
-                {isSaving ? "Finalizing Storage" : "Technical Audit in Progress"}
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
+    <div className="flex h-screen relative font-sans">
       <div className="atmosphere" />
       
       {/* Sidebar */}
       <aside className="w-72 glass-sidebar text-white p-6 flex flex-col gap-8 shrink-0 z-10">
         <div className="flex items-center gap-3">
           <Shield className="w-8 h-8 text-emerald-400 drop-shadow-[0_0_8px_rgba(52,211,153,0.5)]" />
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-white">Kavach Expert</h1>
-            <div className="flex items-center gap-1.5">
-              <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-              <span className="text-[8px] font-black uppercase tracking-widest text-emerald-400/80">Cloud Storage Active</span>
-            </div>
-          </div>
+          <h1 className="text-xl font-bold tracking-tight text-white">Kavach Expert</h1>
         </div>
 
         {/* Mentorship Section */}
@@ -1011,48 +603,6 @@ export default function App() {
           <p className="text-[10px] uppercase font-bold text-emerald-400 tracking-widest mb-1">Technical Supervision</p>
           <p className="text-sm font-semibold text-white">Mentored by CELE Sir</p>
           <p className="text-[10px] text-slate-400 mt-1 italic">Expert Guidance in Traction Operations</p>
-        </div>
-
-        {/* User Profile */}
-        <div className="bg-white/5 p-4 rounded-xl border border-white/10 backdrop-blur-sm">
-          {!user ? (
-            <div className="space-y-2">
-              <button 
-                onClick={handleLogin}
-                disabled={isLoggingIn}
-                className={cn(
-                  "w-full py-2 bg-emerald-500 hover:bg-emerald-400 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all",
-                  isLoggingIn && "opacity-50 cursor-not-allowed"
-                )}
-              >
-                {isLoggingIn ? (
-                  <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <LogIn className="w-3 h-3" />
-                )}
-                {isLoggingIn ? "Logging in..." : "Login to Save History"}
-              </button>
-              {loginError && (
-                <p className="text-[10px] text-rose-400 font-medium leading-tight">{loginError}</p>
-              )}
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="flex items-center gap-3">
-                <img src={user.photoURL || ''} alt="" className="w-8 h-8 rounded-full border border-emerald-500/30" />
-                <div className="overflow-hidden">
-                  <p className="text-xs font-bold text-white truncate">{user.displayName}</p>
-                  <p className="text-[10px] text-slate-400 truncate">{user.email}</p>
-                </div>
-              </div>
-              <button 
-                onClick={handleLogout}
-                className="w-full py-1.5 bg-white/5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 rounded-lg text-[10px] font-bold flex items-center justify-center gap-2 transition-all border border-white/5 hover:border-rose-500/20"
-              >
-                <LogOut className="w-3 h-3" /> Logout
-              </button>
-            </div>
-          )}
         </div>
 
         {/* System Update Note */}
@@ -1066,104 +616,29 @@ export default function App() {
           </p>
         </div>
 
-        {/* User Profile / Login */}
-        <div className="p-4 glass-card rounded-xl border border-white/5">
-          {isAuthReady ? (
-            user ? (
-              <div className="space-y-4">
-                <div className="flex items-center gap-3">
-                  {user.photoURL ? (
-                    <img src={user.photoURL} alt={user.displayName || ''} className="w-10 h-10 rounded-full border border-emerald-500/30" referrerPolicy="no-referrer" />
-                  ) : (
-                    <div className="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold">
-                      {user.displayName?.charAt(0) || 'U'}
-                    </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold text-white truncate">{user.displayName}</p>
-                    <p className="text-[10px] text-slate-400 truncate">{user.email}</p>
-                  </div>
-                </div>
-                <button 
-                  onClick={handleLogout}
-                  className="w-full py-2 flex items-center justify-center gap-2 text-xs font-bold text-slate-400 hover:text-rose-400 transition-all border border-white/5 hover:border-rose-500/30 rounded-lg"
-                >
-                  <LogOut className="w-3 h-3" /> Logout
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-3 text-center">
-                <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">Cloud Storage</p>
-                <p className="text-xs text-slate-300">Login to save analysis history and track station performance over time.</p>
-                <button 
-                  onClick={handleLogin}
-                  disabled={isLoggingIn}
-                  className={cn(
-                    "w-full py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl border border-white/10 transition-all text-xs font-bold flex items-center justify-center gap-2",
-                    isLoggingIn && "opacity-50 cursor-not-allowed"
-                  )}
-                >
-                  {isLoggingIn ? (
-                    <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  ) : (
-                    <LogIn className="w-3 h-3 text-emerald-400" />
-                  )}
-                  {isLoggingIn ? "Logging in..." : "Login with Google"}
-                </button>
-                {loginError && (
-                  <p className="text-[10px] text-rose-400 font-medium leading-tight">{loginError}</p>
-                )}
-              </div>
-            )
-          ) : (
-            <div className="h-20 flex items-center justify-center">
-              <div className="w-4 h-4 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin"></div>
-            </div>
-          )}
-        </div>
-
         <div className="flex flex-col gap-6">
           <div className="space-y-4">
-            <div className="flex justify-between items-center">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Data Input Center</h3>
-              <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
-                {files.rf.length + files.trn.length + files.radio.length} Total Files
-              </span>
-            </div>
-            <p className="text-[10px] text-slate-500 leading-tight">
-              Tip: You can select multiple files at once using <kbd className="bg-white/10 px-1 rounded">Ctrl</kbd> or <kbd className="bg-white/10 px-1 rounded">Shift</kbd>.
-            </p>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Data Input Center</h3>
             <div className="space-y-3">
-              <FileDrop zone="rf" label="1. RFCOMM (Comm Health)" onUpload={handleFileUpload} files={files.rf} onClear={handleClearFiles} />
-              <FileDrop zone="trn" label="2. TRNMSNMA (Software)" onUpload={handleFileUpload} files={files.trn} onClear={handleClearFiles} />
-              <FileDrop zone="radio" label="3. RADIO_1 (Optional)" onUpload={handleFileUpload} files={files.radio} onClear={handleClearFiles} />
+              <FileDrop zone="rf" label="1. RFCOMM (Comm Health)" onUpload={handleFileUpload} files={files.rf} multiple />
+              <FileDrop zone="trn" label="2. TRNMSNMA (Software)" onUpload={handleFileUpload} files={files.trn} multiple />
+              <FileDrop zone="radio" label="3. RADIO_1 (Optional)" onUpload={handleFileUpload} file={files.radio} />
             </div>
           </div>
 
           <button
             onClick={analyzeData}
-            disabled={files.rf.length === 0 || isAnalyzing}
+            disabled={files.rf.length === 0 && files.trn.length === 0}
             className={cn(
               "w-full py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-lg",
-              (files.rf.length > 0) 
+              (files.rf.length > 0 || files.trn.length > 0)
                 ? "bg-emerald-500 hover:bg-emerald-400 text-white shadow-emerald-500/20" 
                 : "bg-white/5 text-slate-500 cursor-not-allowed border border-white/5"
             )}
           >
-            {isAnalyzing ? (
-              <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-            ) : (
-              <Zap className="w-4 h-4" />
-            )}
-            {isAnalyzing ? "Processing..." : "Analyze Logs"}
+            <Zap className="w-4 h-4" />
+            Analyze Logs
           </button>
-          
-          {analysisError && (
-            <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-start gap-3">
-              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-              <p className="text-[10px] text-rose-400 leading-tight font-medium">{analysisError}</p>
-            </div>
-          )}
         </div>
       </aside>
 
@@ -1177,8 +652,8 @@ export default function App() {
             <div className="space-y-2">
               <h2 className="text-3xl font-bold text-white">Ready for Analysis</h2>
               <p className="text-slate-400 max-w-md mx-auto">
-                Upload your Kavach RFCOMM logs to generate a comprehensive diagnostic report. 
-                <span className="block mt-2 text-emerald-400/80 text-sm">Now supports analysis with just RFCOMM logs. TRNMSNMA and RADIO_1 logs are optional.</span>
+                Upload your Kavach RF and TRN logs to generate a comprehensive diagnostic report. 
+                <span className="block mt-2 text-emerald-400/80 text-sm">Now supports analysis without RADIO_1 logs for faster reporting.</span>
               </p>
             </div>
           </div>
@@ -1186,30 +661,12 @@ export default function App() {
           <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
             {/* Header */}
             <div className="flex flex-col gap-6">
-              <div className="flex items-center justify-between border-b border-white/5 pb-6">
-                <div className="flex flex-col gap-1">
-                  <h2 className="text-3xl font-bold text-white flex items-center gap-3">
-                    Loco {stats.locoId} Analysis
-                    {stats.startTime && stats.startTime !== 'N/A' && (
-                      <span className="text-sm font-normal text-slate-400 bg-white/5 px-3 py-1 rounded-lg border border-white/10 flex items-center gap-2">
-                        <Calendar className="w-4 h-4 text-emerald-400" />
-                        {(() => {
-                          const d = safeParseDate(stats.startTime);
-                          return d ? d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : stats.startTime;
-                        })()}
-                      </span>
-                    )}
-                  </h2>
-                  <p className="text-slate-400 text-sm">Comprehensive technical audit and diagnostic report</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
-                    <p className="text-[10px] text-emerald-400 uppercase font-bold tracking-widest">Active Report</p>
-                  </div>
-                </div>
-              </div>
               <div className="flex justify-between items-end">
                 <div className="flex items-end gap-6">
+                  <div>
+                    <p className="text-emerald-400 font-bold text-sm tracking-widest uppercase mb-1">Diagnostic Report</p>
+                    <h2 className="text-4xl font-bold text-white tracking-tight">Loco {stats.locoId}</h2>
+                  </div>
                     <button 
                       onClick={generatePDFReport}
                       className="mb-1 flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl border border-white/10 transition-all text-sm font-bold"
@@ -1230,152 +687,90 @@ export default function App() {
                       {selectedLoco === 'All' ? 'Select Loco for Failure Letter' : 'Download Failure Analysis Letter'}
                     </button>
                   </div>
-                <div className="flex gap-1 p-1 glass-card rounded-xl overflow-x-auto max-w-4xl">
+                <div className="flex gap-1 p-1 glass-card rounded-xl overflow-x-auto max-w-3xl">
                   <TabButton active={activeTab === 'summary'} onClick={() => setActiveTab('summary')} label="Summary" />
                   <TabButton active={activeTab === 'mapping'} onClick={() => setActiveTab('mapping')} label="Mapping" />
                   <TabButton active={activeTab === 'station'} onClick={() => setActiveTab('station')} label="Station Analysis" />
                   <TabButton active={activeTab === 'expert'} onClick={() => setActiveTab('expert')} label="Expert Diagnostics" />
-                  <TabButton active={activeTab === 'deep'} onClick={() => setActiveTab('deep')} label="Deep Analysis" />
                   <TabButton active={activeTab === 'nms'} onClick={() => setActiveTab('nms')} label="NMS" />
                   <TabButton active={activeTab === 'sync'} onClick={() => setActiveTab('sync')} label="Sync" />
                   <TabButton active={activeTab === 'interval'} onClick={() => setActiveTab('interval')} label="Interval" />
-                  <TabButton active={activeTab === 'radio'} onClick={() => setActiveTab('radio')} label="Radio Packets" />
-                  <TabButton active={activeTab === 'history'} onClick={() => setActiveTab('history')} label="History" />
                 </div>
               </div>
 
               {/* Filters */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between px-1">
-                  <div className="flex items-center gap-2">
-                    <div className="w-1 h-4 bg-emerald-500 rounded-full" />
-                    <h3 className="text-sm font-bold text-white">Analysis Filters</h3>
-                  </div>
-                  {(selectedStation !== 'All' || selectedDate !== 'All' || selectedLoco !== 'All' || startDate !== 'All' || endDate !== 'All') && (
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 p-4 glass-card rounded-2xl border border-white/5">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                    <MapPin className="w-3 h-3" /> Station
+                  </label>
+                  <select 
+                    value={selectedStation}
+                    onChange={(e) => setSelectedStation(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-all"
+                  >
+                    {uniqueStations.map(stn => (
+                      <option key={stn} value={stn} className="bg-slate-900">{stn}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                    <Shield className="w-3 h-3" /> Loco
+                  </label>
+                  <select 
+                    value={selectedLoco}
+                    onChange={(e) => setSelectedLoco(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-all"
+                  >
+                    {uniqueLocos.map(loco => (
+                      <option key={loco} value={loco} className="bg-slate-900">{loco}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                    <Clock className="w-3 h-3" /> From Date
+                  </label>
+                  <select 
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-all"
+                  >
+                    <option value="All" className="bg-slate-900">All Dates</option>
+                    {stats.allDates.map(d => (
+                      <option key={d} value={d} className="bg-slate-900">{d}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                    <Clock className="w-3 h-3" /> To Date
+                  </label>
+                  <select 
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-all"
+                  >
+                    <option value="All" className="bg-slate-900">All Dates</option>
+                    {stats.allDates.map(d => (
+                      <option key={d} value={d} className="bg-slate-900">{d}</option>
+                    ))}
+                  </select>
+                </div>
+                { (selectedStation !== 'All' || selectedLoco !== 'All' || startDate !== 'All' || endDate !== 'All') && (
+                  <div className="md:col-span-4 flex justify-end">
                     <button 
-                      onClick={() => {
-                        setSelectedStation('All');
-                        setSelectedDate('All');
-                        setSelectedLoco('All');
-                        setStartDate('All');
-                        setEndDate('All');
+                      onClick={() => { 
+                        setSelectedStation('All'); 
+                        setSelectedLoco('All'); 
+                        setStartDate('All'); 
+                        setEndDate('All'); 
                       }}
-                      className="flex items-center gap-1.5 px-3 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-[10px] font-bold text-rose-400 uppercase tracking-widest rounded-full border border-rose-500/20 transition-all"
+                      className="px-4 py-2 bg-rose-500/20 text-rose-400 rounded-xl border border-rose-500/20 text-xs font-bold hover:bg-rose-500/30 transition-all"
                     >
-                      <RotateCcw className="w-3 h-3" />
                       Reset All Filters
                     </button>
-                  )}
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-3 p-3 glass-card rounded-2xl border border-white/10 bg-slate-900/40">
-                  <div className="space-y-1.5">
-                    <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1.5 px-1">
-                      <MapPin className="w-3 h-3 text-emerald-400" /> Station
-                    </label>
-                    <select 
-                      value={selectedStation}
-                      onChange={(e) => setSelectedStation(e.target.value)}
-                      className="w-full bg-slate-900/60 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500/50 transition-all cursor-pointer hover:bg-slate-900/80"
-                    >
-                      {uniqueStations.map(stn => (
-                        <option key={stn} value={stn} className="bg-slate-900">{stn}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1.5 px-1">
-                      <Calendar className="w-3 h-3 text-emerald-400" /> Single Date
-                    </label>
-                    <select 
-                      value={selectedDate}
-                      onChange={(e) => {
-                        setSelectedDate(e.target.value);
-                        if (e.target.value !== 'All') {
-                          setStartDate('All');
-                          setEndDate('All');
-                        }
-                      }}
-                      className="w-full bg-slate-900/60 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500/50 transition-all cursor-pointer hover:bg-slate-900/80"
-                    >
-                      {uniqueDates.map(date => (
-                        <option key={date} value={date} className="bg-slate-900">{date}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1.5 px-1">
-                      <ArrowRight className="w-3 h-3 text-emerald-400" /> From Date
-                    </label>
-                    <select 
-                      value={startDate}
-                      onChange={(e) => {
-                        setStartDate(e.target.value);
-                        if (e.target.value !== 'All') setSelectedDate('All');
-                      }}
-                      className="w-full bg-slate-900/60 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500/50 transition-all cursor-pointer hover:bg-slate-900/80"
-                    >
-                      {uniqueDates.map(date => (
-                        <option key={date} value={date} className="bg-slate-900">{date}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1.5 px-1">
-                      <ArrowLeft className="w-3 h-3 text-emerald-400" /> To Date
-                    </label>
-                    <select 
-                      value={endDate}
-                      onChange={(e) => {
-                        setEndDate(e.target.value);
-                        if (e.target.value !== 'All') setSelectedDate('All');
-                      }}
-                      className="w-full bg-slate-900/60 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500/50 transition-all cursor-pointer hover:bg-slate-900/80"
-                    >
-                      {uniqueDates.map(date => (
-                        <option key={date} value={date} className="bg-slate-900">{date}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1.5 px-1">
-                      <Shield className="w-3 h-3 text-emerald-400" /> Loco
-                    </label>
-                    <select 
-                      value={selectedLoco}
-                      onChange={(e) => setSelectedLoco(e.target.value)}
-                      className="w-full bg-slate-900/60 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500/50 transition-all cursor-pointer hover:bg-slate-900/80"
-                    >
-                      {uniqueLocos.map(loco => (
-                        <option key={loco} value={loco} className="bg-slate-900">{loco}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                
-                {/* Range Summary Banner */}
-                {(selectedDate !== 'All' || (startDate !== 'All' && endDate !== 'All')) && (
-                  <div className="flex items-center justify-between p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl animate-in fade-in slide-in-from-top-2 duration-300">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-emerald-500/20 rounded-lg">
-                        <Calendar className="w-4 h-4 text-emerald-400" />
-                      </div>
-                      <div>
-                        <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Active Range Analysis</p>
-                        <p className="text-sm font-bold text-white">
-                          {selectedDate !== 'All' ? selectedDate : `${startDate} to ${endDate}`}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-6">
-                      <div className="text-right">
-                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Avg Performance</p>
-                        <p className="text-lg font-bold text-emerald-400">{filteredStats?.locoPerformance.toFixed(2)}%</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Stations Covered</p>
-                        <p className="text-lg font-bold text-white">{filteredStats?.stationStats.length}</p>
-                      </div>
-                    </div>
                   </div>
                 )}
               </div>
@@ -1385,135 +780,62 @@ export default function App() {
             {activeTab === 'mapping' && filteredStats && <DeepMapping stats={filteredStats} files={files} />}
             {activeTab === 'station' && filteredStats && <StationAnalysis stats={filteredStats} />}
             {activeTab === 'expert' && filteredStats && <ExpertDiagnostics stats={filteredStats} tagSearch={tagSearch} setTagSearch={setTagSearch} />}
-            {activeTab === 'deep' && filteredStats && <StationDeepAnalysis stats={filteredStats} />}
             {activeTab === 'nms' && filteredStats && <NMSAnalysis stats={filteredStats} />}
             {activeTab === 'sync' && filteredStats && <SyncAnalysis stats={filteredStats} />}
             {activeTab === 'interval' && filteredStats && <IntervalAnalysis stats={filteredStats} />}
-            {activeTab === 'radio' && filteredStats && <RadioPacketAnalysis stats={filteredStats} />}
-            {activeTab === 'history' && (
-              <HistoryView 
-                user={user} 
-                handleLogin={handleLogin} 
-                isLoggingIn={isLoggingIn} 
-                loginError={loginError} 
-                selectedLoco={selectedLoco}
-                selectedStation={selectedStation}
-                onRecall={(data) => {
-                  setStats(data);
-                  setActiveTab('summary');
-                }}
-              />
-            )}
           </div>
         )}
       </main>
     </div>
-    </ErrorBoundary>
   );
 }
 
 function StationAnalysis({ stats }: { stats: DashboardStats }) {
-  const [viewMode, setViewMode] = useState<'split' | 'grouped'>('grouped');
-
-  // Group stats by station for the grouped chart
-  const groupedData = stats.stationStats.reduce((acc: any[], curr) => {
+  // Group stats by station for the table but keep individual for the chart if needed
+  // Or better, prepare a chart-friendly data structure
+  const chartData = stats.stationStats.reduce((acc: any[], curr) => {
     const existing = acc.find(a => a.stationId === curr.stationId);
-    const suffix = curr.direction.toLowerCase().includes('nominal') ? 'Nominal' : 
-                   curr.direction.toLowerCase().includes('reverse') ? 'Reverse' : 'Other';
+    const suffix = (curr.direction || '').toLowerCase().includes('nominal') ? 'Nominal' : 
+                   (curr.direction || '').toLowerCase().includes('reverse') ? 'Reverse' : curr.direction;
     
     if (existing) {
-      // Aggregate data for average calculation
-      const receivedKey = `received_${suffix}`;
-      const expectedKey = `expected_${suffix}`;
-      const countKey = `count_${suffix}`;
-      const sumKey = `sum_${suffix}`;
-
-      existing[receivedKey] = (existing[receivedKey] || 0) + curr.received;
-      existing[expectedKey] = (existing[expectedKey] || 0) + curr.expected;
-      existing[countKey] = (existing[countKey] || 0) + 1;
-      existing[sumKey] = (existing[sumKey] || 0) + curr.percentage;
+      existing[`perc_${suffix}`] = curr.percentage;
+      existing[`received_${suffix}`] = curr.received;
+      existing[`expected_${suffix}`] = curr.expected;
     } else {
       acc.push({
         stationId: curr.stationId,
         [`perc_${suffix}`]: curr.percentage,
         [`received_${suffix}`]: curr.received,
-        [`expected_${suffix}`]: curr.expected,
-        [`sum_${suffix}`]: curr.percentage,
-        [`count_${suffix}`]: 1
+        [`expected_${suffix}`]: curr.expected
       });
     }
     return acc;
   }, []);
 
-  // Second pass to finalize averages
-  const finalGroupedData = groupedData.map(item => {
-    ['Nominal', 'Reverse', 'Other'].forEach(suffix => {
-      const sumKey = `sum_${suffix}`;
-      const countKey = `count_${suffix}`;
-      const percKey = `perc_${suffix}`;
-      
-      if (item[countKey] && item[countKey] > 1) {
-        // Recalculate average
-        item[percKey] = item[sumKey] / item[countKey];
-      }
-    });
-    return item;
-  });
-
   return (
     <div className="space-y-6">
       <div className="glass-card p-8 rounded-2xl">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-emerald-500/20 rounded-lg">
-              <BarChart3 className="w-6 h-6 text-emerald-400" />
-            </div>
-            <div>
-              <h3 className="text-xl font-bold text-white">
-                RFCOMM Performance Analysis
-              </h3>
-              <p className="text-xs text-slate-400">Nominal vs Reverse Success Rates per Station</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
-              <button
-                onClick={() => setViewMode('grouped')}
-                className={cn(
-                  "px-4 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all",
-                  viewMode === 'grouped' ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20" : "text-slate-400 hover:text-white"
-                )}
-              >
-                Grouped View
-              </button>
-              <button
-                onClick={() => setViewMode('split')}
-                className={cn(
-                  "px-4 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all",
-                  viewMode === 'split' ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20" : "text-slate-400 hover:text-white"
-                )}
-              >
-                Individual View
-              </button>
-            </div>
-
-            <div className="hidden sm:flex gap-4 text-[10px] font-bold uppercase tracking-widest">
-              <div className="flex items-center gap-2"><div className="w-3 h-3 bg-emerald-500 rounded" /> Healthy ({'>'}= 95%)</div>
-              <div className="flex items-center gap-2"><div className="w-3 h-3 bg-rose-500 rounded" /> Critical ({'<'} 95%)</div>
-            </div>
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-xl font-bold text-white flex items-center gap-2">
+            <BarChart3 className="w-6 h-6 text-emerald-400" />
+            Station-wise RFCOMM Performance (Nominal vs Reverse)
+          </h3>
+          <div className="flex gap-4 text-[10px] font-bold uppercase tracking-widest">
+            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-emerald-500 rounded" /> Healthy ({'>'}= 95%)</div>
+            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-rose-500 rounded" /> Critical ({'<'} 95%)</div>
           </div>
         </div>
         
         <div className="h-[500px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart 
-              data={viewMode === 'grouped' ? finalGroupedData : stats.stationStats.map(s => ({ ...s, label: `${s.stationId} (${s.direction})` }))} 
+              data={stats.stationStats.map(s => ({ ...s, label: `${s.stationId} (${s.direction})` }))} 
               margin={{ bottom: 70 }}
             >
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
               <XAxis 
-                dataKey={viewMode === 'grouped' ? "stationId" : "label"} 
+                dataKey="label" 
                 stroke="#64748b" 
                 fontSize={10}
                 angle={-45}
@@ -1532,46 +854,18 @@ function StationAnalysis({ stats }: { stats: DashboardStats }) {
                 cursor={{ fill: 'rgba(255,255,255,0.05)' }}
                 formatter={(value: number, name: string, props: any) => [
                   `${value.toFixed(2)}%`, 
-                  viewMode === 'grouped' ? name.replace('perc_', '') : `Success (${props.payload.direction})`
+                  `Success (${props.payload.direction})`
                 ]}
               />
-              <Legend 
-                verticalAlign="top" 
-                height={36} 
-                wrapperStyle={{ fontSize: '10px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.1em' }}
-              />
-              {viewMode === 'grouped' ? (
-                <>
-                  <Bar name="Nominal" dataKey="perc_Nominal" radius={[4, 4, 0, 0]} barSize={20}>
-                    {finalGroupedData.map((entry, index) => (
-                      <Cell 
-                        key={`cell-nom-${index}`} 
-                        fill={entry.perc_Nominal < 95 ? '#ef4444' : '#10b981'} 
-                        fillOpacity={0.8}
-                      />
-                    ))}
-                  </Bar>
-                  <Bar name="Reverse" dataKey="perc_Reverse" radius={[4, 4, 0, 0]} barSize={20}>
-                    {finalGroupedData.map((entry, index) => (
-                      <Cell 
-                        key={`cell-rev-${index}`} 
-                        fill={entry.perc_Reverse < 95 ? '#f43f5e' : '#34d399'} 
-                        fillOpacity={0.6}
-                      />
-                    ))}
-                  </Bar>
-                </>
-              ) : (
-                <Bar name="RFCOMM Success" dataKey="percentage" radius={[4, 4, 0, 0]} barSize={30}>
-                  {stats.stationStats.map((entry, index) => (
-                    <Cell 
-                      key={`cell-${index}`} 
-                      fill={entry.percentage < 95 ? '#ef4444' : '#10b981'} 
-                      fillOpacity={0.8}
-                    />
-                  ))}
-                </Bar>
-              )}
+              <Bar dataKey="percentage" radius={[4, 4, 0, 0]} barSize={30}>
+                {stats.stationStats.map((entry, index) => (
+                  <Cell 
+                    key={`cell-${index}`} 
+                    fill={entry.percentage < 95 ? '#ef4444' : '#10b981'} 
+                    fillOpacity={0.8}
+                  />
+                ))}
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -1599,7 +893,7 @@ function StationAnalysis({ stats }: { stats: DashboardStats }) {
                   <td className="py-3 px-4">
                     <span className={cn(
                       "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
-                      s.direction.toLowerCase().includes('nominal') ? "bg-blue-500/20 text-blue-400" : "bg-purple-500/20 text-purple-400"
+                      (s.direction || '').toLowerCase().includes('nominal') ? "bg-blue-500/20 text-blue-400" : "bg-purple-500/20 text-purple-400"
                     )}>
                       {s.direction}
                     </span>
@@ -1626,9 +920,9 @@ function StationAnalysis({ stats }: { stats: DashboardStats }) {
 
 function ExpertDiagnostics({ stats, tagSearch, setTagSearch }: { stats: DashboardStats; tagSearch: string; setTagSearch: (v: string) => void }) {
   const filteredTags = stats.tagLinkIssues.filter(t => 
-    t.info.toLowerCase().includes(tagSearch.toLowerCase()) || 
-    t.error.toLowerCase().includes(tagSearch.toLowerCase()) ||
-    t.stationId.toLowerCase().includes(tagSearch.toLowerCase())
+    (t.info || '').toLowerCase().includes((tagSearch || '').toLowerCase()) || 
+    (t.error || '').toLowerCase().includes((tagSearch || '').toLowerCase()) ||
+    (t.stationId || '').toLowerCase().includes((tagSearch || '').toLowerCase())
   );
 
   return (
@@ -2210,12 +1504,12 @@ function ExecutiveSummary({ stats }: { stats: DashboardStats }) {
   );
 }
 
-function DeepMapping({ stats, files }: { stats: DashboardStats; files: { rf: File | null; trn: File | null; radio: File | null } }) {
+function DeepMapping({ stats, files }: { stats: DashboardStats; files: { rf: File[]; trn: File[]; radio: File | null } }) {
   const failures = [
     {
       id: 1,
       title: `NMS Health Critical Failure (${stats.nmsFailRate.toFixed(1)}%)`,
-      source: files.trn?.name || 'N/A',
+      source: files.trn.length > 0 ? files.trn.map(f => f.name).join(', ') : 'N/A',
       column: "'NMS Health'",
       detail: `The NMS Health column should ideally maintain a value of 32 (Healthy). Your data contains anomalous values in ${stats.nmsFailRate.toFixed(1)}% of rows, indicating persistent NMS server connection issues.`
     },
@@ -2229,7 +1523,7 @@ function DeepMapping({ stats, files }: { stats: DashboardStats; files: { rf: Fil
     {
       id: 3,
       title: "Station Hardware Marginal Status",
-      source: files.rf?.name || 'N/A',
+      source: files.rf.length > 0 ? files.rf.map(f => f.name).join(', ') : 'N/A',
       column: "'Station Id' and 'Percentage'",
       detail: `Average percentage analysis indicates that signal strength at stations ${stats.badStns.join(', ') || 'None'} has fallen below the 95% threshold.`
     },
@@ -2274,908 +1568,32 @@ function DeepMapping({ stats, files }: { stats: DashboardStats; files: { rf: Fil
   );
 }
 
-function HistoryView({ 
-  user, 
-  handleLogin, 
-  isLoggingIn, 
-  loginError,
-  onRecall,
-  selectedLoco,
-  selectedStation
-}: { 
-  user: User | null; 
-  handleLogin: () => Promise<void>; 
-  isLoggingIn: boolean; 
-  loginError: string | null; 
-  onRecall: (data: DashboardStats) => void;
-  selectedLoco: string;
-  selectedStation: string;
-}) {
-  const [reports, setReports] = useState<any[]>([]);
-  const [stationHistory, setStationHistory] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'reports' | 'stations'>('reports');
-  const [editingNotes, setEditingNotes] = useState<string | null>(null);
-  const [tempNotes, setTempNotes] = useState("");
-  const [startDate, setStartDate] = useState<string>("");
-  const [endDate, setEndDate] = useState<string>("");
-
-  const safeFormat = (dateStr: string, fmt: string) => {
-    try {
-      const d = new Date(dateStr);
-      if (isNaN(d.getTime())) return "...";
-      return format(d, fmt);
-    } catch (e) {
-      return "...";
-    }
-  };
-
-  const fetchData = async () => {
-    if (!user) return;
-    setLoading(true);
-    try {
-      let reportsQuery;
-      if (startDate || endDate) {
-        // Parse YYYY-MM-DD manually to ensure local time interpretation
-        const parseLocalDate = (s: string) => {
-          const [y, m, d] = s.split('-').map(Number);
-          return new Date(y, m - 1, d);
-        };
-
-        let start = startDate ? startOfDay(parseLocalDate(startDate)).toISOString() : null;
-        let end = endDate ? endOfDay(parseLocalDate(endDate)).toISOString() : null;
-        
-        // If only one is provided, treat it as a single day or open-ended range
-        if (startDate && !endDate) {
-          end = endOfDay(parseLocalDate(startDate)).toISOString();
-        } else if (!startDate && endDate) {
-          // No start, just end
-        }
-
-        let constraints = [where('userId', '==', user.uid)];
-        if (start) constraints.push(where('date', '>=', start));
-        if (end) constraints.push(where('date', '<=', end));
-        
-        reportsQuery = query(
-          collection(db, 'reports'),
-          ...constraints,
-          orderBy('date', 'desc'),
-          limit(100)
-        );
-      } else {
-        reportsQuery = query(
-          collection(db, 'reports'),
-          where('userId', '==', user.uid),
-          orderBy('date', 'desc'),
-          limit(50)
-        );
-      }
-      const reportsSnapshot = await getDocs(reportsQuery);
-      setReports(reportsSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) })));
-
-      // Also filter station history if needed
-      let stationQuery;
-      if (startDate || endDate) {
-        const parseLocalDate = (s: string) => {
-          const [y, m, d] = s.split('-').map(Number);
-          return new Date(y, m - 1, d);
-        };
-
-        let start = startDate ? startOfDay(parseLocalDate(startDate)).toISOString() : null;
-        let end = endDate ? endOfDay(parseLocalDate(endDate)).toISOString() : null;
-        if (startDate && !endDate) end = endOfDay(parseLocalDate(startDate)).toISOString();
-
-        let constraints = [where('userId', '==', user.uid)];
-        if (start) constraints.push(where('date', '>=', start));
-        if (end) constraints.push(where('date', '<=', end));
-        
-        stationQuery = query(
-          collection(db, 'station_history'),
-          ...constraints,
-          orderBy('date', 'desc'),
-          limit(500)
-        );
-      } else {
-        stationQuery = query(
-          collection(db, 'station_history'),
-          where('userId', '==', user.uid),
-          orderBy('date', 'desc'),
-          limit(100)
-        );
-      }
-      const stationSnapshot = await getDocs(stationQuery);
-      const rawStationData = stationSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) }));
-
-      if (startDate || endDate) {
-        // Aggregate by stationId
-        const aggregation: Record<string, { totalPerc: number, count: number, locoIds: Set<string>, lastDate: string }> = {};
-        rawStationData.forEach(entry => {
-          const sid = entry.stationId || 'Unknown';
-          if (!aggregation[sid]) {
-            aggregation[sid] = { totalPerc: 0, count: 0, locoIds: new Set(), lastDate: entry.date };
-          }
-          aggregation[sid].totalPerc += entry.percentage || 0;
-          aggregation[sid].count += 1;
-          if (entry.locoId) aggregation[sid].locoIds.add(entry.locoId);
-        });
-
-        const aggregatedData = Object.entries(aggregation).map(([id, data]) => ({
-          id: `agg-${id}`,
-          stationId: id,
-          percentage: data.totalPerc / data.count,
-          locoId: Array.from(data.locoIds).join(', '),
-          date: data.lastDate,
-          isAggregated: true,
-          sampleCount: data.count
-        }));
-        setStationHistory(aggregatedData);
-      } else {
-        setStationHistory(rawStationData);
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.GET, 'reports');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchData();
-  }, [user, startDate, endDate]);
-
-  const toggleFlag = async (reportId: string, currentFlag: boolean) => {
-    try {
-      const reportRef = doc(db, 'reports', reportId);
-      await updateDoc(reportRef, { isFlagged: !currentFlag });
-      setReports(reports.map(r => r.id === reportId ? { ...r, isFlagged: !currentFlag } : r));
-    } catch (error) {
-      console.error("Error toggling flag:", error);
-    }
-  };
-
-  const toggleStatus = async (reportId: string, currentStatus: string) => {
-    const nextStatus = currentStatus === 'Pending' ? 'Resolved' : 'Pending';
-    try {
-      const reportRef = doc(db, 'reports', reportId);
-      await updateDoc(reportRef, { status: nextStatus });
-      setReports(reports.map(r => r.id === reportId ? { ...r, status: nextStatus } : r));
-    } catch (error) {
-      console.error("Error toggling status:", error);
-    }
-  };
-
-  const saveNotes = async (reportId: string) => {
-    try {
-      const reportRef = doc(db, 'reports', reportId);
-      await updateDoc(reportRef, { notes: tempNotes });
-      setReports(reports.map(r => r.id === reportId ? { ...r, notes: tempNotes } : r));
-      setEditingNotes(null);
-    } catch (error) {
-      console.error("Error saving notes:", error);
-    }
-  };
-
-  const deleteReport = async (reportId: string) => {
-    if (!window.confirm("Are you sure you want to delete this report? This action cannot be undone.")) return;
-    try {
-      await deleteDoc(doc(db, 'reports', reportId));
-      setReports(reports.filter(r => r.id !== reportId));
-    } catch (error) {
-      console.error("Error deleting report:", error);
-    }
-  };
-
-  if (!user) {
-    return (
-      <div className="h-full flex flex-col items-center justify-center text-center space-y-4">
-        <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center">
-          <History className="w-8 h-8 text-slate-500" />
-        </div>
-        <div className="space-y-2">
-          <h3 className="text-xl font-bold text-white">Login Required</h3>
-          <p className="text-slate-400 max-w-sm">Please login with your Google account to view and save analysis history.</p>
-        </div>
-        <button 
-          onClick={handleLogin}
-          disabled={isLoggingIn}
-          className={cn(
-            "px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-white rounded-xl font-bold transition-all shadow-lg shadow-emerald-500/20 flex items-center gap-2",
-            isLoggingIn && "opacity-50 cursor-not-allowed"
-          )}
-        >
-          {isLoggingIn ? (
-            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-          ) : (
-            <LogIn className="w-4 h-4" />
-          )}
-          {isLoggingIn ? "Logging in..." : "Login with Google"}
-        </button>
-        {loginError && (
-          <p className="text-sm text-rose-400 font-medium max-w-sm">{loginError}</p>
+function FileDrop({ zone, label, onUpload, file, files, multiple }: { zone: string; label: string; onUpload: any; file?: File | null; files?: File[]; multiple?: boolean }) {
+  const hasFiles = multiple ? (files && files.length > 0) : !!file;
+  
+  return (
+    <div className={cn(
+      "relative group cursor-pointer rounded-xl border-2 border-dashed transition-all p-4 text-center",
+      hasFiles ? "bg-emerald-500/10 border-emerald-500/50" : "bg-white/5 border-white/10 hover:border-emerald-500/30"
+    )}>
+      <input
+        type="file"
+        multiple={multiple}
+        className="absolute inset-0 opacity-0 cursor-pointer"
+        onChange={(e) => e.target.files && onUpload(zone, multiple ? e.target.files : e.target.files[0])}
+      />
+      <div className="flex flex-col items-center gap-2">
+        {hasFiles ? (
+          <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+        ) : (
+          <Upload className="w-6 h-6 text-slate-500 group-hover:text-emerald-400 transition-colors" />
         )}
-      </div>
-    );
-  }
-
-  const filteredReports = reports.filter(r => {
-    if (selectedLoco !== 'All' && String(r.locoId) !== selectedLoco) return false;
-    return true;
-  });
-
-  const filteredStationHistory = stationHistory.filter(h => {
-    if (selectedLoco !== 'All' && String(h.locoId) !== selectedLoco) return false;
-    if (selectedStation !== 'All' && String(h.stationId) !== selectedStation) return false;
-    return true;
-  });
-
-  return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div className="flex gap-2 p-1 bg-white/5 rounded-xl border border-white/5">
-          <button 
-            onClick={() => setView('reports')}
-            className={cn(
-              "px-4 py-2 rounded-lg text-xs font-bold transition-all",
-              view === 'reports' ? "bg-emerald-500 text-white shadow-lg" : "text-slate-400 hover:text-white"
-            )}
-          >
-            Analysis Reports
-          </button>
-          <button 
-            onClick={() => setView('stations')}
-            className={cn(
-              "px-4 py-2 rounded-lg text-xs font-bold transition-all",
-              view === 'stations' ? "bg-emerald-500 text-white shadow-lg" : "text-slate-400 hover:text-white"
-            )}
-          >
-            Station Failures
-          </button>
-        </div>
-        
-        <div className="flex flex-wrap items-center gap-4 w-full md:w-auto">
-          <div className="flex items-center gap-3 bg-white/5 p-3 rounded-2xl border border-white/10 shadow-xl backdrop-blur-md">
-            <div className="flex flex-col gap-1.5">
-              <span className="text-[9px] text-emerald-400 font-bold ml-1 tracking-widest uppercase">From Date</span>
-              <div className="relative">
-                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-400 pointer-events-none" />
-                <input 
-                  type="date" 
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  className="bg-slate-900/50 border border-white/20 rounded-xl pl-10 pr-3 py-2.5 text-xs font-bold text-white focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/50 transition-all w-40"
-                />
-              </div>
-            </div>
-            
-            <div className="flex items-center justify-center pt-5">
-              <div className="w-4 h-px bg-white/20" />
-            </div>
-            
-            <div className="flex flex-col gap-1.5">
-              <span className="text-[9px] text-emerald-400 font-bold ml-1 tracking-widest uppercase">To Date</span>
-              <div className="relative">
-                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-400 pointer-events-none" />
-                <input 
-                  type="date" 
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  className="bg-slate-900/50 border border-white/20 rounded-xl pl-10 pr-3 py-2.5 text-xs font-bold text-white focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/50 transition-all w-40"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-end pt-5 gap-2">
-              <button 
-                onClick={() => fetchData()}
-                className="p-2.5 bg-emerald-500 hover:bg-emerald-400 text-white rounded-xl shadow-lg shadow-emerald-500/20 transition-all active:scale-95"
-                title="Refresh Search"
-              >
-                <FileSearch className="w-4 h-4" />
-              </button>
-              {(startDate || endDate) && (
-                <button 
-                  onClick={() => { setStartDate(""); setEndDate(""); }}
-                  className="p-2.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-xl border border-rose-500/20 transition-all"
-                  title="Clear Filter"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          </div>
-          
-          <div className="flex flex-col items-end justify-center h-full">
-            <div className="bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-lg">
-              <p className="text-[10px] text-emerald-400 uppercase font-bold tracking-widest whitespace-nowrap flex items-center gap-2">
-                {startDate && endDate && startDate === endDate ? (
-                  <>
-                    <CheckCircle2 className="w-3 h-3" /> 
-                    <span>On: {safeFormat(startDate, 'dd MMM yyyy')}</span>
-                  </>
-                ) : startDate || endDate ? (
-                  <>
-                    <Calendar className="w-3 h-3" />
-                    <span>{startDate ? safeFormat(startDate, 'dd MMM') : '...'} — {endDate ? safeFormat(endDate, 'dd MMM') : '...'}</span>
-                  </>
-                ) : (
-                  <>
-                    <Clock className="w-3 h-3" />
-                    <span>Latest Records</span>
-                  </>
-                )}
-              </p>
-            </div>
-            <p className="text-[9px] text-slate-600 font-bold uppercase tracking-tighter mt-1 mr-1">
-              {view === 'reports' ? filteredReports.length : filteredStationHistory.length} records found
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {loading ? (
-        <div className="h-64 flex items-center justify-center">
-          <div className="w-8 h-8 border-4 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin"></div>
-        </div>
-      ) : view === 'reports' ? (
-        <div className="grid gap-4">
-          {filteredReports.length > 0 ? filteredReports.map((report) => (
-            <div key={report.id} className={cn(
-              "glass-card p-6 rounded-2xl border transition-all group relative",
-              report.isFlagged ? "border-amber-500/50 bg-amber-500/5 shadow-lg shadow-amber-500/10" : "border-white/5 hover:border-emerald-500/30"
-            )}>
-              <div className="flex justify-between items-start">
-                <div className="flex gap-4">
-                  <div className={cn(
-                    "w-12 h-12 rounded-xl flex items-center justify-center border",
-                    report.isFlagged ? "bg-amber-500/20 border-amber-500/30" : "bg-emerald-500/10 border-emerald-500/20"
-                  )}>
-                    <FileSearch className={cn("w-6 h-6", report.isFlagged ? "text-amber-400" : "text-emerald-400")} />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-3">
-                      <h4 className="text-lg font-bold text-white">Loco {report.locoId}</h4>
-                      {report.isFlagged && (
-                        <span className="px-2 py-0.5 bg-amber-500 text-black text-[10px] font-black rounded uppercase tracking-tighter">Watchlist</span>
-                      )}
-                    </div>
-                    <p className="text-xs text-slate-500 flex items-center gap-2 mt-1">
-                      <Calendar className="w-3 h-3" /> {format(new Date(report.date), 'PPP p')}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="text-right">
-                    <p className="text-[10px] text-slate-500 uppercase font-bold tracking-widest mb-1">Performance</p>
-                    <p className={cn(
-                      "text-2xl font-bold",
-                      report.overallPerformance >= 98 ? "text-emerald-400" : "text-amber-400"
-                    )}>
-                      {report.overallPerformance.toFixed(1)}%
-                    </p>
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <button 
-                      onClick={() => toggleFlag(report.id, report.isFlagged)}
-                      className={cn(
-                        "p-2 rounded-lg border transition-all",
-                        report.isFlagged ? "bg-amber-500 text-black border-amber-500" : "bg-white/5 border-white/10 text-slate-500 hover:text-amber-400"
-                      )}
-                      title={report.isFlagged ? "Remove from Watchlist" : "Add to Watchlist"}
-                    >
-                      <Flag className="w-4 h-4" />
-                    </button>
-                    <button 
-                      onClick={() => deleteReport(report.id)}
-                      className="p-2 rounded-lg bg-white/5 border border-white/10 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-all"
-                      title="Delete Report"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-6 grid grid-cols-4 gap-4 pt-4 border-t border-white/5">
-                <div className="space-y-1">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold">NMS Fail Rate</p>
-                  <p className="text-sm font-bold text-white">{report.nmsFailRate.toFixed(1)}%</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold">Avg Lag</p>
-                  <p className="text-sm font-bold text-white">{report.avgLag.toFixed(2)}s</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold">Status</p>
-                  <button 
-                    onClick={() => toggleStatus(report.id, report.status || 'Pending')}
-                    className={cn(
-                      "flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-all",
-                      report.status === 'Resolved' ? "bg-emerald-500/20 text-emerald-400" : "bg-amber-500/20 text-amber-400"
-                    )}
-                  >
-                    {report.status === 'Resolved' ? <CheckCircle2 className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
-                    {report.status || 'Pending'}
-                  </button>
-                </div>
-                <div className="flex items-end justify-end gap-3">
-                  {report.fullData && (
-                    <button 
-                      onClick={() => {
-                        try {
-                          const data = JSON.parse(report.fullData);
-                          onRecall(data);
-                        } catch (e) {
-                          console.error("Error recalling data:", e);
-                        }
-                      }}
-                      className="text-emerald-400 hover:text-emerald-300 text-[10px] font-bold flex items-center gap-1 transition-colors bg-emerald-500/10 px-2 py-1 rounded"
-                    >
-                      <Activity className="w-3 h-3" /> Recall Analysis
-                    </button>
-                  )}
-                  <button className="text-slate-400 hover:text-white text-[10px] font-bold flex items-center gap-1 transition-colors">
-                    View Details <ChevronRight className="w-3 h-3" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Original Files Download Section */}
-              <div className="mt-4 pt-4 border-t border-white/5">
-                <p className="text-[10px] text-slate-500 uppercase font-bold mb-2 flex items-center gap-2">
-                  <Database className="w-3 h-3 text-emerald-400" /> Original Log Files
-                </p>
-                {report.originalFiles ? (
-                  report.originalFiles.length > 0 ? (
-                    <div className="flex flex-wrap gap-2">
-                      {report.originalFiles.map((file: any, idx: number) => (
-                        <a 
-                          key={idx}
-                          href={file.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[10px] text-slate-300 hover:text-white transition-all"
-                        >
-                          <Download className="w-3 h-3 text-emerald-400" />
-                          <span className="max-w-[150px] truncate">{file.name}</span>
-                          <span className="px-1.5 py-0.5 bg-emerald-500/20 text-emerald-400 rounded text-[8px] font-black">{file.type}</span>
-                        </a>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2 px-3 py-2 bg-rose-500/5 border border-rose-500/10 rounded-lg">
-                      <AlertCircle className="w-3 h-3 text-rose-400" />
-                      <p className="text-[10px] text-rose-400/80 italic">Upload failed for this record. Storage might not be configured correctly.</p>
-                    </div>
-                  )
-                ) : (
-                  <div className="flex items-center gap-2 px-3 py-2 bg-slate-500/5 border border-white/5 rounded-lg">
-                    <AlertCircle className="w-3 h-3 text-slate-500" />
-                    <p className="text-[10px] text-slate-500 italic">No original files available (uploaded before storage fix).</p>
-                  </div>
-                )}
-              </div>
-
-              <div className="mt-4 pt-4 border-t border-white/5">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-2">
-                    <MessageSquare className="w-3 h-3" /> Technician Notes
-                  </p>
-                  {editingNotes !== report.id ? (
-                    <button 
-                      onClick={() => { setEditingNotes(report.id); setTempNotes(report.notes || ""); }}
-                      className="text-[10px] text-emerald-400 hover:underline font-bold"
-                    >
-                      {report.notes ? 'Edit' : 'Add Note'}
-                    </button>
-                  ) : (
-                    <div className="flex gap-2">
-                      <button onClick={() => saveNotes(report.id)} className="text-[10px] text-emerald-400 font-bold">Save</button>
-                      <button onClick={() => setEditingNotes(null)} className="text-[10px] text-slate-500 font-bold">Cancel</button>
-                    </div>
-                  )}
-                </div>
-                {editingNotes === report.id ? (
-                  <textarea 
-                    value={tempNotes}
-                    onChange={(e) => setTempNotes(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500/50 min-h-[60px]"
-                    placeholder="Enter maintenance notes..."
-                  />
-                ) : (
-                  <p className="text-xs text-slate-400 italic">
-                    {report.notes || "No notes added yet."}
-                  </p>
-                )}
-              </div>
-            </div>
-          )) : (
-            <div className="py-20 text-center glass-card rounded-2xl border border-white/5">
-              <p className="text-slate-500">No analysis reports found.</p>
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="glass-card rounded-2xl border border-white/5 overflow-hidden">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-white/5 text-slate-500 uppercase text-[10px] font-bold border-b border-white/5">
-              <tr>
-                <th className="py-4 px-6">Date</th>
-                <th className="py-4 px-6">Station</th>
-                <th className="py-4 px-6">Loco ID(s)</th>
-                <th className="py-4 px-6">{startDate || endDate ? 'Average Performance' : 'Performance'}</th>
-                <th className="py-4 px-6">Status</th>
-              </tr>
-            </thead>
-            <tbody className="text-slate-300 divide-y divide-white/5">
-              {filteredStationHistory.length > 0 ? filteredStationHistory.map((entry, idx) => (
-                <tr key={entry.id || idx} className="hover:bg-white/5 transition-colors">
-                  <td className="py-4 px-6 text-xs text-slate-500">
-                    {entry.isAggregated ? (
-                      <span className="text-emerald-400 font-bold">Aggregated</span>
-                    ) : (
-                      format(new Date(entry.date), 'MMM d, yyyy')
-                    )}
-                  </td>
-                  <td className="py-4 px-6 font-bold text-white">
-                    {entry.stationId}
-                    {entry.isAggregated && (
-                      <span className="ml-2 text-[8px] bg-white/10 px-1 rounded text-slate-400">
-                        {entry.sampleCount} samples
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-4 px-6 font-mono text-[10px] max-w-[150px] truncate" title={entry.locoId}>
-                    {entry.locoId}
-                  </td>
-                  <td className="py-4 px-6">
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden w-24">
-                        <div 
-                          className={cn(
-                            "h-full rounded-full",
-                            entry.percentage < 90 ? "bg-rose-500" : "bg-amber-500"
-                          )}
-                          style={{ width: `${entry.percentage}%` }}
-                        />
-                      </div>
-                      <span className="font-bold">{entry.percentage.toFixed(1)}%</span>
-                    </div>
-                  </td>
-                  <td className="py-4 px-6">
-                    <span className={cn(
-                      "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
-                      entry.percentage < 90 ? "bg-rose-500/20 text-rose-400" : "bg-amber-500/20 text-amber-400"
-                    )}>
-                      {entry.percentage < 90 ? 'Critical' : 'Marginal'}
-                    </span>
-                  </td>
-                </tr>
-              )) : (
-                <tr><td colSpan={5} className="py-20 text-center text-slate-500">No station failure history found.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function FileDrop({ zone, label, onUpload, files, onClear }: { zone: string; label: string; onUpload: any; files: File[]; onClear: (zone: string) => void }) {
-  const hasFiles = files.length > 0;
-  return (
-    <div className="space-y-2">
-      <div className={cn(
-        "relative group cursor-pointer rounded-xl border-2 border-dashed transition-all p-4 text-center",
-        hasFiles ? "bg-emerald-500/10 border-emerald-500/50" : "bg-white/5 border-white/10 hover:border-emerald-500/30"
-      )}>
-        <input
-          type="file"
-          multiple
-          accept=".csv,.xlsx,.xls"
-          className="absolute inset-0 opacity-0 cursor-pointer z-10"
-          onChange={(e) => onUpload(zone, e.target.files)}
-        />
-        <div className="flex flex-col items-center gap-2">
-          {hasFiles ? (
-            <div className="relative">
-              <CheckCircle2 className="w-6 h-6 text-emerald-400" />
-              <span className="absolute -top-2 -right-2 bg-emerald-500 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full">
-                {files.length}
-              </span>
-            </div>
-          ) : (
-            <Upload className="w-6 h-6 text-slate-500 group-hover:text-emerald-400 transition-colors" />
-          )}
-          <span className={cn("text-xs font-medium", hasFiles ? "text-emerald-400" : "text-slate-400")}>
-            {hasFiles ? `${files.length} Files Selected` : label}
-          </span>
-        </div>
-      </div>
-      {hasFiles && (
-        <button 
-          onClick={() => onClear(zone)}
-          className="w-full flex items-center justify-center gap-1 text-[10px] font-bold text-rose-400 hover:text-rose-300 transition-colors"
-        >
-          <Trash2 className="w-3 h-3" /> Clear Files
-        </button>
-      )}
-    </div>
-  );
-}
-
-function RadioPacketAnalysis({ stats }: { stats: DashboardStats }) {
-  if (!stats.stationRadioPackets || stats.stationRadioPackets.length === 0) {
-    return (
-      <div className="glass-card p-12 rounded-2xl text-center">
-        <Radio className="w-12 h-12 text-slate-600 mx-auto mb-4 opacity-20" />
-        <h3 className="text-xl font-bold text-slate-400">No Radio Packet Data Found</h3>
-        <p className="text-slate-500 mt-2">Ensure the TRNMSNMA log file contains columns AD to BF.</p>
-      </div>
-    );
-  }
-
-  // Get all unique packet keys (column headers)
-  const packetKeys = Array.from(new Set(
-    stats.stationRadioPackets.flatMap(p => Object.keys(p.packets))
-  )).sort();
-
-  return (
-    <div className="space-y-6">
-      <div className="glass-card p-8 rounded-2xl">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="p-2 bg-blue-500/20 rounded-lg">
-            <Radio className="w-6 h-6 text-blue-400" />
-          </div>
-          <div>
-            <h3 className="text-xl font-bold text-white">Station Radio Packet Analysis</h3>
-            <p className="text-xs text-slate-400">Detailed packet status from TRNMSNMA (Columns AD to BF)</p>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-[10px]">
-            <thead className="text-slate-500 uppercase font-bold border-b border-white/5">
-              <tr>
-                <th className="pb-3 px-2 whitespace-nowrap">Time</th>
-                <th className="pb-3 px-2 whitespace-nowrap">Station</th>
-                {packetKeys.map(key => (
-                  <th key={key} className="pb-3 px-2 whitespace-nowrap text-center min-w-[40px]">{key}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="text-slate-300">
-              {stats.stationRadioPackets.slice(0, 100).map((row, i) => (
-                <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors">
-                  <td className="py-2 px-2 font-mono text-blue-400 whitespace-nowrap">{row.time}</td>
-                  <td className="py-2 px-2 font-bold text-white whitespace-nowrap">{row.stationId}</td>
-                  {packetKeys.map(key => {
-                    const val = row.packets[key];
-                    const isHealthy = val === 1 || val === '1' || String(val).toLowerCase() === 'ok';
-                    const isError = val === 0 || val === '0' || String(val).toLowerCase().includes('fail') || String(val).toLowerCase().includes('err');
-                    
-                    return (
-                      <td key={key} className="py-2 px-2 text-center">
-                        <span className={cn(
-                          "inline-block w-4 h-4 rounded-sm flex items-center justify-center text-[8px] font-bold",
-                          isHealthy ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/20" :
-                          isError ? "bg-rose-500/20 text-rose-400 border border-rose-500/20" :
-                          val !== undefined ? "bg-blue-500/20 text-blue-400 border border-blue-500/20" : "opacity-10"
-                        )}>
-                          {val !== undefined ? val : '-'}
-                        </span>
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {stats.stationRadioPackets.length > 100 && (
-            <p className="text-[10px] text-slate-500 mt-4 italic">Showing first 100 entries of {stats.stationRadioPackets.length} total.</p>
-          )}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="glass-card p-6 rounded-2xl">
-          <h4 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Packet Health Summary</h4>
-          <div className="space-y-4">
-            {packetKeys.map(key => {
-              const total = stats.stationRadioPackets.length;
-              const healthy = stats.stationRadioPackets.filter(p => p.packets[key] === 1 || p.packets[key] === '1').length;
-              const perc = (healthy / total) * 100;
-              
-              return (
-                <div key={key} className="space-y-1">
-                  <div className="flex justify-between text-[10px]">
-                    <span className="text-slate-400 font-bold">{key}</span>
-                    <span className={cn("font-mono", perc >= 95 ? "text-emerald-400" : "text-rose-400")}>
-                      {perc.toFixed(1)}% Healthy
-                    </span>
-                  </div>
-                  <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-                    <div 
-                      className={cn("h-full transition-all duration-500", perc >= 95 ? "bg-emerald-500" : "bg-rose-500")}
-                      style={{ width: `${perc}%` }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="glass-card p-6 rounded-2xl">
-          <h4 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Diagnostic Insight</h4>
-          <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
-            <div className="flex items-start gap-3">
-              <Info className="w-5 h-5 text-blue-400 mt-0.5" />
-              <div className="text-sm text-slate-300">
-                <p className="font-bold text-blue-400 mb-1">Radio Packet Interpretation</p>
-                <p>Columns AD to BF in TRNMSNMA logs represent the real-time health of radio communication between the Loco and various trackside stations.</p>
-                <ul className="list-disc list-inside mt-2 space-y-1 text-xs text-slate-400">
-                  <li><span className="text-emerald-400 font-bold">1</span> indicates a successful packet exchange.</li>
-                  <li><span className="text-rose-400 font-bold">0</span> indicates a missed or failed packet.</li>
-                  <li>Frequent <span className="text-rose-400 font-bold">0</span>s at specific stations suggest local RF interference or hardware issues at those locations.</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StationDeepAnalysis({ stats }: { stats: DashboardStats }) {
-  const { stationDeepAnalysis } = stats;
-  if (!stationDeepAnalysis) return <div className="text-center py-20 text-slate-500">No deep analysis data available.</div>;
-
-  const { topFaultyStations, faultyLocos, criticalEvents, rootCause } = stationDeepAnalysis;
-
-  return (
-    <div className="space-y-8 pb-20">
-      {/* Root Cause Summary */}
-      <div className="glass-card p-8 rounded-3xl border-l-8 border-emerald-500 bg-emerald-500/5">
-        <div className="flex flex-col md:flex-row gap-8 items-center">
-          <div className="flex-1">
-            <h3 className="text-2xl font-bold text-white mb-2 flex items-center gap-3">
-              <Activity className="w-6 h-6 text-emerald-400" />
-              Root Cause Analysis Conclusion
-            </h3>
-            <p className="text-slate-300 text-lg leading-relaxed">{rootCause.conclusion}</p>
-          </div>
-          <div className="flex gap-4">
-            <div className="text-center p-4 bg-white/5 rounded-2xl border border-white/10 min-w-[120px]">
-              <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Station Side</p>
-              <p className="text-3xl font-bold text-emerald-400">{rootCause.stationSide}%</p>
-            </div>
-            <div className="text-center p-4 bg-white/5 rounded-2xl border border-white/10 min-w-[120px]">
-              <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Loco Side</p>
-              <p className="text-3xl font-bold text-rose-400">{rootCause.locoSide}%</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Top Faulty Stations */}
-        <div className="glass-card p-6 rounded-2xl">
-          <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
-            <Radio className="w-5 h-5 text-emerald-400" />
-            Top Faulty Stations (Station-Side Issues)
-          </h3>
-          <div className="space-y-4">
-            {topFaultyStations.map((stn, i) => (
-              <div key={i} className="bg-white/5 p-4 rounded-xl border border-white/5 hover:bg-white/10 transition-all">
-                <div className="flex justify-between items-start mb-3">
-                  <div>
-                    <p className="text-sm font-bold text-white">Station ID: {stn.stationId}</p>
-                    <p className="text-[10px] text-slate-500 uppercase font-bold">Health Score: {stn.healthScore.toFixed(1)}%</p>
-                  </div>
-                  <span className={cn(
-                    "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
-                    stn.status === 'Critical' ? "bg-rose-500/20 text-rose-400" : 
-                    stn.status === 'Warning' ? "bg-amber-500/20 text-amber-400" : "bg-emerald-500/20 text-emerald-400"
-                  )}>
-                    {stn.status}
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-4 mb-3">
-                  <div className="text-center">
-                    <p className="text-[10px] text-slate-500 uppercase font-bold">Failures</p>
-                    <p className="text-lg font-bold text-white">{stn.failureCount}</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-[10px] text-slate-500 uppercase font-bold">Avg Duration</p>
-                    <p className="text-lg font-bold text-white">{stn.avgLossDuration}s</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-[10px] text-slate-500 uppercase font-bold">Affected Locos</p>
-                    <p className="text-lg font-bold text-white">{stn.affectedLocos.length}</p>
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {stn.affectedLocos.map(loco => (
-                    <span key={loco} className="px-1.5 py-0.5 bg-white/5 rounded text-[9px] text-slate-400 font-mono">{loco}</span>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Faulty Locos */}
-        <div className="glass-card p-6 rounded-2xl">
-          <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
-            <Settings className="w-5 h-5 text-rose-400" />
-            Faulty Locos (Onboard Issues)
-          </h3>
-          <div className="space-y-4">
-            {faultyLocos.map((loco, i) => (
-              <div key={i} className="bg-white/5 p-4 rounded-xl border border-white/5 hover:bg-white/10 transition-all">
-                <div className="flex justify-between items-start mb-3">
-                  <div>
-                    <p className="text-sm font-bold text-white">Loco ID: {loco.locoId}</p>
-                    <p className="text-[10px] text-slate-500 uppercase font-bold">RF Failures: {loco.failureCount}</p>
-                  </div>
-                  <span className={cn(
-                    "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
-                    loco.status === 'Critical' ? "bg-rose-500/20 text-rose-400" : 
-                    loco.status === 'Suspect' ? "bg-amber-500/20 text-amber-400" : "bg-emerald-500/20 text-emerald-400"
-                  )}>
-                    {loco.status}
-                  </span>
-                </div>
-                <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Affected Stations ({loco.stationsCovered.length})</p>
-                <div className="flex flex-wrap gap-1">
-                  {loco.stationsCovered.map(stn => (
-                    <span key={stn} className="px-1.5 py-0.5 bg-white/5 rounded text-[9px] text-slate-400 font-mono">{stn}</span>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Critical Events Timeline */}
-      <div className="glass-card p-6 rounded-2xl">
-        <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
-          <AlertTriangle className="w-5 h-5 text-amber-400" />
-          Critical RF Events Timeline
-        </h3>
-        <div className="space-y-3">
-          {criticalEvents.length > 0 ? criticalEvents.map((event, i) => (
-            <div key={i} className="bg-white/5 p-4 rounded-xl border border-white/5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center shrink-0">
-                  <Clock className="w-5 h-5 text-slate-500" />
-                </div>
-                <div>
-                  <p className="text-xs font-bold text-white">{event.time}</p>
-                  <p className="text-[10px] text-slate-500 uppercase font-bold">Station: {event.stationId} | Loco: {event.locoId}</p>
-                </div>
-              </div>
-              <div className="flex-1">
-                <span className={cn(
-                  "px-2 py-0.5 rounded text-[10px] font-bold uppercase mb-1 inline-block",
-                  event.type === 'Long Duration' ? "bg-rose-500/20 text-rose-400" : "bg-amber-500/20 text-amber-400"
-                )}>
-                  {event.type}
-                </span>
-                <p className="text-sm text-slate-300">{event.description}</p>
-              </div>
-              <div className="text-right">
-                <p className="text-xs font-bold text-white">{event.duration > 0 ? `${event.duration}s` : 'N/A'}</p>
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Duration</p>
-              </div>
-            </div>
-          )) : (
-            <div className="text-center py-10 text-slate-500 italic">No critical RF events detected.</div>
-          )}
-        </div>
+        <span className={cn("text-xs font-medium", hasFiles ? "text-emerald-400" : "text-slate-400")}>
+          {multiple 
+            ? (files && files.length > 0 ? `${files.length} files selected` : label)
+            : (file ? file.name : label)
+          }
+        </span>
       </div>
     </div>
   );
