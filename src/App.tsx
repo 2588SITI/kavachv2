@@ -76,6 +76,11 @@ export default function App() {
   const checkAwsStatus = async () => {
     try {
       const res = await fetch('/api/aws/files');
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("AWS se error aaya hai (Status Check):", text);
+        return;
+      }
       const data = await res.json();
       if (!data.error) {
         setIsAwsConnected(true);
@@ -91,6 +96,12 @@ export default function App() {
     setIsFetching(true);
     try {
       const res = await fetch('/api/aws/files');
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("AWS se error aaya hai (Connect):", text);
+        alert(`Server Error: ${res.status}\n\nDetails: ${text.substring(0, 100)}...`);
+        return;
+      }
       const data = await res.json();
       if (data.error) {
         const details = data.details ? `\nDetails: ${data.details}` : '';
@@ -297,11 +308,20 @@ export default function App() {
         try {
           console.log(`Fetching file: ${f.name} (ID: ${f.id})`);
           const resUrl = await fetch(`/api/aws/download/${encodeURIComponent(f.id)}`);
+          if (!resUrl.ok) {
+            const text = await resUrl.text();
+            console.error("AWS se error aaya hai (Download URL):", text);
+            throw new Error(`Server Error: ${resUrl.status}`);
+          }
           const data = await resUrl.json();
           if (data.error) throw new Error(data.error);
           
           const res = await fetch(data.url);
-          if (!res.ok) throw new Error(`Failed to download file from S3: ${res.statusText}`);
+          if (!res.ok) {
+            const text = await res.text();
+            console.error("AWS se error aaya hai (File Download):", text);
+            throw new Error(`Failed to download file from S3: ${res.statusText}`);
+          }
           
           const blob = await res.blob();
           console.log(`Parsing file: ${f.name}, size: ${blob.size} bytes`);
