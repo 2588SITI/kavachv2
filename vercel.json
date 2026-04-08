@@ -2,18 +2,22 @@
   "version": 2,
   "builds": [
     {
-      "src": "package.json",
+      "src": "server.ts",
       "use": "@vercel/node"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "/server.ts"
     },
     {
-      "src": "/(.*)",
-      "dest": "/dist/$1"
+      "src": "package.json",
+      "use": "@vercel/static-build"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/server.ts"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }
