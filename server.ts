@@ -79,8 +79,13 @@ app.get('/api/aws/files', async (req, res) => {
   }
 });
 
-app.get('/api/aws/download/:key', async (req, res) => {
-  const { key } = req.params;
+app.get('/api/aws/download', async (req, res) => {
+  const key = req.query.key as string;
+  
+  if (!key) {
+    return res.status(400).json({ error: 'Missing file key' });
+  }
+
   try {
     const command = new GetObjectCommand({
       Bucket: process.env.AWS_BUCKET_NAME,

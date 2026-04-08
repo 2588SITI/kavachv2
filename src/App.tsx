@@ -307,7 +307,7 @@ export default function App() {
       const fetchAndParse = async (f: any) => {
         try {
           console.log(`Fetching file: ${f.name} (ID: ${f.id})`);
-          const resUrl = await fetch(`/api/aws/download/${encodeURIComponent(f.id)}`);
+          const resUrl = await fetch(`/api/aws/download?key=${encodeURIComponent(f.id)}`);
           if (!resUrl.ok) {
             const text = await resUrl.text();
             console.error("AWS se error aaya hai (Download URL):", text);
