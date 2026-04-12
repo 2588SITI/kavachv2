@@ -401,6 +401,15 @@ export const processDashboardData = (
     const trnStnIdCol = findColumn(trnData[0], 'Station Id', 'StationId', 'Station_Id');
     const trnStnCode2Col = findColumn(trnData[0], 'Station Code2', 'StationCode2', 'Station_Code2');
 
+    // Also populate stationMap from TRN data to capture stations that might not have RF data
+    trnData.forEach(row => {
+      const id = String(row[trnStnIdCol] || '').trim();
+      const name = String(row[trnStnNameCol] || '').trim();
+      if (isValidStationId(id) && !stationMap[id] && name && name !== 'N/A') {
+        stationMap[id] = name;
+      }
+    });
+
     for (let i = 0; i < trnData.length; i++) {
       const row = trnData[i];
       const prevRow = i > 0 ? trnData[i - 1] : null;
@@ -774,8 +783,23 @@ export const processDashboardData = (
       };
     });
 
-  const badStns = Array.from(new Set(stnPerf.filter((s) => s.percentage < 95).map((s) => s.stationId)));
-  const goodStns = Array.from(new Set(stnPerf.filter((s) => s.percentage >= 98).map((s) => s.stationId)));
+  // Calculate global station performance (weighted average)
+  const globalStationStats = new Map<string, { exp: number, rec: number }>();
+  Object.entries(stnGroups).forEach(([key, data]) => {
+    const stationId = key.split('|')[0];
+    if (!globalStationStats.has(stationId)) globalStationStats.set(stationId, { exp: 0, rec: 0 });
+    const g = globalStationStats.get(stationId)!;
+    g.exp += data.expected;
+    g.rec += data.received;
+  });
+
+  const globalStationPerf = Array.from(globalStationStats.entries()).map(([stationId, data]) => ({
+    stationId,
+    percentage: data.exp > 0 ? (data.rec / data.exp) * 100 : 0
+  }));
+
+  const badStns = globalStationPerf.filter(s => s.percentage < 95).map(s => s.stationId);
+  const goodStns = globalStationPerf.filter(s => s.percentage >= 98).map(s => s.stationId);
 
   // Multi-Loco Bad Station Logic
   const stnLocoMap: Record<string | number, { 
@@ -799,7 +823,12 @@ export const processDashboardData = (
   });
 
   const multiLocoBadStns = Object.entries(stnLocoMap)
-    .filter(([, data]) => data.locoDetails.length > 1)
+    .filter(([stationId, data]) => {
+      const g = globalStationStats.get(stationId);
+      const globalPerf = g && g.exp > 0 ? (g.rec / g.exp) * 100 : 100;
+      // Only include if multiple locos failed AND the overall station performance is below 95%
+      return data.locoDetails.length > 1 && globalPerf < 95;
+    })
     .map(([stationId, data]) => ({
       stationId,
       locoCount: data.locoDetails.length,
@@ -887,34 +916,41 @@ export const processDashboardData = (
 
   // Tag Link Issues (Medha Specific)
   const tagLinkCol = findColumn(firstRadio, 'Tag Link Info', 'TagLinkInfo', 'TagInfo') || 'Tag Link Info';
-  const radioTagIssues = radioData
-    .filter(p => {
-      const info = String(p[tagLinkCol] || '').toLowerCase();
-      return info.includes('error') || 
-             info.includes('mismatch') || 
-             info.includes('wrong') || 
-             info.includes('fail') ||
-             info.includes('maintagmissing') ||
-             info.includes('duplicatetagmissing');
-    })
-    .map(p => {
-      const info = String(p[tagLinkCol]);
+  const radioTagIssues: any[] = [];
+  const seenRadioTagIssues = new Set<string>();
+  radioData.forEach(p => {
+    const info = String(p[tagLinkCol] || '').toLowerCase();
+    if (info.includes('error') || 
+        info.includes('mismatch') || 
+        info.includes('wrong') || 
+        info.includes('fail') ||
+        info.includes('maintagmissing') ||
+        info.includes('duplicatetagmissing')) {
+      
+      const time = getRadioTime(p);
+      const lId = String(p[radioLocoIdCol] || locoId).trim();
+      const key = `${time}|${lId}|${info}`;
+      if (seenRadioTagIssues.has(key)) return;
+      seenRadioTagIssues.add(key);
+
       let errorType = "Potential Medha Kavach Reporting Issue";
       if (info.toLowerCase().includes('maintagmissing')) errorType = "Main Tag Missing";
       if (info.toLowerCase().includes('duplicatetagmissing')) errorType = "Duplicate Tag Missing";
       
-      return {
-        time: getRadioTime(p),
+      radioTagIssues.push({
+        time: time,
         stationId: String(p[stnIdCol] || 'N/A'),
-        info: info,
+        info: String(p[tagLinkCol]),
         error: errorType,
-        locoId: String(p[radioLocoIdCol] || locoId).trim(),
+        locoId: lId,
         radio: String(p[radioRadioCol] || '').trim()
-      };
-    });
+      });
+    }
+  });
 
   // Also check TRNMSNMA for Tag Link Issues (User specified Column R)
   const trnTagIssues: any[] = [];
+  const seenTrnTagIssues = new Set<string>();
   if (trnData) {
     const firstTrn = trnData[0] || {};
     // Try to find column R (18th column) or a named column
@@ -925,16 +961,22 @@ export const processDashboardData = (
     trnData.forEach(row => {
       const info = String(row[trnTagLinkCol] || '').toLowerCase();
       if (info.includes('maintagmissing') || info.includes('duplicatetagmissing')) {
+        const time = getTrnTime(row);
+        const lId = String(row[trnLocoIdCol] || locoId).trim();
+        const key = `${time}|${lId}|${info}`;
+        if (seenTrnTagIssues.has(key)) return;
+        seenTrnTagIssues.add(key);
+
         let errorType = "Potential Medha Kavach Reporting Issue";
         if (info.includes('maintagmissing')) errorType = "Main Tag Missing";
         if (info.includes('duplicatetagmissing')) errorType = "Duplicate Tag Missing";
 
       trnTagIssues.push({
-        time: getTrnTime(row),
+        time: time,
         stationId: String(row[findColumn(row, 'Station Id', 'StationId', 'Station_Id') || ''] || 'N/A'),
         info: String(row[trnTagLinkCol]),
         error: errorType,
-        locoId: String(row[trnLocoIdCol] || locoId).trim(),
+        locoId: lId,
         radio: String(row[trnRadioCol] || '').trim()
       });
       }
@@ -945,12 +987,13 @@ export const processDashboardData = (
 
   // NMS Logic
   const nmsHealthCol = findColumn(firstTrn, 'NMS Health', 'NMSHealth', 'Health') || 'NMS Health';
-  const modeCol = findColumn(firstTrn, 'Mode', 'CurrentMode', 'OpMode') || trnKeys[14] || 'Mode';
-  const eventCol = findColumn(firstTrn, 'Event', 'Description', 'LogEntry') || 'Event';
-  const reasonCol = findColumn(firstTrn, 'Reason', 'Cause', 'FaultReason') || 'Reason';
-  const lpResponseCol = findColumn(firstTrn, 'LP Response', 'DriverAction', 'Response', 'Acknowledge', 'Pilot Ack') || trnKeys[23] || 'LP Response';
-  const speedCol = findColumn(firstTrn, 'Speed', 'Velocity', 'Kmph') || 'Speed';
-  const locationCol = findColumn(firstTrn, 'Location', 'Km', 'Position') || 'Location';
+  const modeCol = findColumn(firstTrn, 'Mode', 'CurrentMode', 'OpMode', 'Operation Mode') || trnKeys[13] || trnKeys[14] || 'Mode';
+  const eventCol = findColumn(firstTrn, 'Event', 'Description', 'LogEntry', 'Log', 'Message') || trnKeys[16] || 'Event';
+  const reasonCol = findColumn(firstTrn, 'Reason', 'Cause', 'FaultReason', 'Degradation Reason') || trnKeys[17] || 'Reason';
+  const lpResponseCol = findColumn(firstTrn, 'LP Response', 'DriverAction', 'Response', 'Acknowledge', 'Pilot Ack', 'Action') || trnKeys[12] || trnKeys[23] || 'LP Response';
+  const speedCol = findColumn(firstTrn, 'Speed', 'Velocity', 'Kmph', 'Current Speed') || trnKeys[10] || 'Speed';
+  const locationCol = findColumn(firstTrn, 'Location', 'Km', 'Position', 'Distance') || trnKeys[6] || 'Location';
+  const brakeCol = findColumn(firstTrn, 'Brake', 'Brake Status', 'BrakeType', 'Brake_Status', 'EB/SB', 'Brake_Type', 'Brake Applied') || trnKeys[19] || 'Brake';
   const signalIdCol = findColumn(firstTrn, 'Signal Id', 'SignalId', 'SigId') || 'Signal Id';
   const signalStatusCol = findColumn(firstTrn, 'Signal Status', 'SignalStatus', 'SigStatus') || 'Signal Status';
 
@@ -1078,8 +1121,11 @@ export const processDashboardData = (
 
   // Mode Degradation
   const modeDegradations: DashboardStats['modeDegradations'] = [];
-  let lastMode: string | null = null;
-  let lastAck: string | null = null;
+  const lastModes: Record<string, string> = {};
+  const lastAcks: Record<string, string> = {};
+  const lastReasons: Record<string, string> = {};
+  const lastNonTripModes: Record<string, string> = {};
+  const rowCountPerLoco: Record<string, number> = {};
 
   const modePriority: Record<string, number> = {
     'FS': 5,
@@ -1093,9 +1139,17 @@ export const processDashboardData = (
   };
   
   trnData?.forEach((row) => {
+    const trnKeys = Object.keys(row);
+    const locoIdVal = getBestLocoIdFromRow(row, trnKeys, locoId);
+    if (!isValidLocoId(locoIdVal)) return;
+
+    rowCountPerLoco[locoIdVal] = (rowCountPerLoco[locoIdVal] || 0) + 1;
+    const isStartup = rowCountPerLoco[locoIdVal] <= 15; // First 15 rows are considered startup
+
     const rawMode = String(row[modeCol] || '').trim();
     const currentAck = String(row[lpResponseCol] || '').trim();
     const event = String(row[eventCol] || '').toLowerCase();
+    const rawReason = String(row[reasonCol] || '').trim();
     
     // Normalize mode names for detection
     let currentMode = rawMode;
@@ -1109,32 +1163,45 @@ export const processDashboardData = (
     else if (upperRaw.includes('ISOLATION') || upperRaw === 'IS') currentMode = 'IS';
     
     if (currentMode) {
+      const lastMode = lastModes[locoIdVal];
+      const lastAck = lastAcks[locoIdVal];
+      const lastReason = lastReasons[locoIdVal];
+      const lastNonTripMode = lastNonTripModes[locoIdVal];
+
       const isDegradationMessage = currentAck.toLowerCase().includes('to_sr') || 
                                    currentAck.toLowerCase().includes('to_os') ||
                                    currentAck.toLowerCase().includes('degrad');
                                    
       const modeChanged = lastMode && currentMode !== lastMode;
       const ackChanged = lastAck && currentAck !== lastAck;
+      const reasonChanged = lastReason && rawReason !== lastReason;
       
-      // If it's the first row and it's already in a degraded state with a message, count it
-      const isFirstRowDegraded = !lastMode && (currentMode === 'SR' || currentMode === 'OS' || currentMode === 'SH') && isDegradationMessage;
+      // If it's the first row, we don't count SR or OS as degradation because it's usually the startup sequence.
+      const isFirstRowDegraded = !lastMode && (currentMode === 'TR' || currentMode === 'IS') && isDegradationMessage;
 
-      if (modeChanged || ackChanged || isFirstRowDegraded) {
+      if (modeChanged || ackChanged || reasonChanged || isFirstRowDegraded) {
         // A true degradation is moving down the priority hierarchy
-        const lastPrio = lastMode ? (modePriority[lastMode] ?? 5) : 5;
+        const lastPrio = lastMode ? (modePriority[lastMode] ?? 5) : (currentMode === 'SR' || currentMode === 'OS' ? 1 : 5);
         const currPrio = modePriority[currentMode] ?? 5;
         
-        const isTrueDegradation = currPrio < lastPrio;
+        const isUpgrade = lastMode && currPrio > lastPrio;
+        const isTrueDegradation = lastMode && currPrio < lastPrio;
         
-        // Or if the Pilot Ack explicitly says "degrad" or the event says so
-        const isExplicitDegradation = isDegradationMessage || event.includes('degrad');
+        // A true mode degradation is ONLY when it drops FROM FS (5) to something lower,
+        // or from a higher state to a significantly lower state (like OS to TRIP).
+        // Transitions to SR or OS during startup are NOT degradations.
+        const isSignificantDrop = lastMode === 'FS' || (lastPrio > 2 && currPrio <= 1) || currentMode === 'TR';
+        
+        // Or if the Pilot Ack explicitly says "degrad" or the event says so, 
+        // but ONLY if it's NOT an upgrade and NOT the startup sequence
+        const isExplicitDegradation = lastMode && !isUpgrade && (isDegradationMessage || event.includes('degrad'));
                               
-        if (isTrueDegradation || isExplicitDegradation) {
-          // Skip normal startup sequence: SR -> OS -> FS is an upgrade, so it's already skipped by prio check.
-          // However, we also want to avoid any "degradation" that is just the system settling into SR/OS at the very start.
+        if ((isTrueDegradation && isSignificantDrop) || (isExplicitDegradation && isSignificantDrop) || isFirstRowDegraded || (currentMode === 'TR' && (ackChanged || reasonChanged))) {
+          // Skip normal startup sequence and minor settling.
+          // Mode Degradation now ONLY shows actual critical drops.
           
           // Extract a meaningful reason
-          let reason = String(row[reasonCol] || '').trim();
+          let reason = rawReason;
           if (!reason || reason === 'N/A' || reason === '0') {
             reason = String(row[eventCol] || '').trim();
           }
@@ -1142,48 +1209,96 @@ export const processDashboardData = (
             reason = currentAck || 'Mode Change';
           }
 
-          const time = getTrnTime(row);
-          const locoIdVal = String(row[trnLocoIdCol] || locoId).trim();
+          // USER REQUEST: Exclude Radio Packet Loss from Mode Degradation
+          // But InterTagDistGreaterThanDupTag is NOT a radio packet loss issue
+          const isInterTagDistIssue = reason.toLowerCase().includes('intertagdistgreaterthanduptag') || 
+                                      event.toLowerCase().includes('intertagdistgreaterthanduptag');
 
-          // DYNAMIC ANALYSIS: Correlate with Radio Packet Loss if possible
-          // This will be refined after radio packets are processed
-          const stnNameCol = findColumn(row, 'Station Name', 'StationName', 'Station_Name');
-          const stnName = stnNameCol ? String(row[stnNameCol] || '').trim() : String(row[trnKeys[2]] || '').trim();
+          const isRadioPacketLoss = (reason.toLowerCase().includes('packet loss') || 
+                                    event.includes('packet loss')) && !isInterTagDistIssue;
 
-          modeDegradations.push({
-            time,
-            from: lastMode || (isDegradationMessage && currentAck.includes('FS_to') ? 'FS' : 'Unknown'),
-            to: currentMode,
-            reason: reason,
-            lpResponse: currentAck,
-            stationId: String(row[findColumn(row, 'Station Id', 'StationId', 'Station_Id') || ''] || 'N/A'),
-            stationName: stnName,
-            locoId: locoIdVal,
-            radio: String(row[trnRadioCol] || '').trim()
-          });
+          // USER REQUEST: SR/OS/FS transitions are now considered normal (Upgradation)
+          const isSROSFS_Transition = (lastMode === 'FS' || lastMode === 'OS' || lastMode === 'SR') && 
+                                      (currentMode === 'FS' || currentMode === 'OS' || currentMode === 'SR');
+
+          // USER REQUEST: Exclude SR/OS transitions during startup or settling
+          const isStartupTransition = isStartup && (currentMode === 'SR' || currentMode === 'OS' || currentMode === 'FS');
+          
+          // USER REQUEST: Exclude NoTagMissing during startup or if it's just a status with No_Ack
+          const isNoTagIssue = reason.toLowerCase().includes('notagmissing') && (isStartup || currentAck.toLowerCase().includes('no_ack'));
+
+          // CRITICAL: If the mode is TR (Trip), we MUST show it even if it's related to radio packet loss
+          const shouldInclude = currentMode === 'TR' || (!isRadioPacketLoss && !isSROSFS_Transition && !isStartupTransition && !isNoTagIssue);
+
+          if (shouldInclude) {
+            const time = getTrnTime(row);
+            const stnNameCol = findColumn(row, 'Station Name', 'StationName', 'Station_Name');
+            const stnName = stnNameCol ? String(row[stnNameCol] || '').trim() : String(row[trnKeys[2]] || '').trim();
+
+            // USER REQUEST: Identify the previous mode for the 'From' column.
+            // We look at the last known mode for the SAME locomotive that was NOT 'TR'.
+            // This ensures the transition is correctly attributed to the specific loco's operational state.
+            let fromMode = lastMode || (isDegradationMessage && currentAck.includes('FS_to') ? 'FS' : 'Unknown');
+            if (currentMode === 'TR' && lastNonTripMode && lastNonTripMode !== 'TR') {
+              fromMode = lastNonTripMode;
+            }
+
+            modeDegradations.push({
+              time,
+              from: fromMode,
+              to: currentMode,
+              reason: reason,
+              lpResponse: currentAck,
+              stationId: String(row[findColumn(row, 'Station Id', 'StationId', 'Station_Id') || ''] || 'N/A'),
+              stationName: stnName,
+              locoId: locoIdVal,
+              radio: String(row[trnRadioCol] || '').trim()
+            });
+          }
         }
       }
-      lastMode = currentMode;
-      lastAck = currentAck;
+      lastModes[locoIdVal] = currentMode;
+      lastAcks[locoIdVal] = currentAck;
+      lastReasons[locoIdVal] = rawReason;
+      if (currentMode !== 'TR') {
+        lastNonTripModes[locoIdVal] = currentMode;
+      }
     }
   });
 
   // Brake Applications
-  const brakeApplications = trnData
-    ?.filter(row => {
-      const event = String(row[eventCol] || '').toLowerCase();
-      const hasBrake = event.includes('brake') || event.includes('eb applied') || event.includes('sb applied');
-      return hasBrake && isValidLocoId(row[trnLocoIdCol] || locoId);
-    })
-    .map(row => ({
-      time: getTrnTime(row),
-      type: String(row[eventCol]),
-      speed: Number(row[speedCol]) || 0,
-      location: String(row[locationCol] || 'N/A'),
-      stationId: String(row[findColumn(row, 'Station Id', 'StationId', 'Station_Id') || ''] || 'N/A'),
-      locoId: String(row[trnLocoIdCol] || locoId).trim(),
-      radio: String(row[trnRadioCol] || '').trim()
-    })) || [];
+  const brakeApplications: any[] = [];
+  const lastBrakeState: Record<string, string> = {};
+  const trnStnIdCol = findColumn(firstTrn, 'Station Id', 'StationId', 'Station_Id') || 'Station Id';
+
+  trnData?.forEach(row => {
+    const lIdVal = getBestLocoIdFromRow(row, trnKeys, locoId);
+    if (!isValidLocoId(lIdVal)) return;
+
+    const event = String(row[eventCol] || '').toLowerCase();
+    const brakeVal = String(row[brakeCol] || '').toUpperCase().trim();
+    
+    // Check for EB or SB in either the event description or the dedicated brake column (Column T)
+    const isEB = event.includes('eb applied') || brakeVal === 'EB' || event.includes('emergency brake');
+    const isSB = event.includes('sb applied') || brakeVal === 'SB' || event.includes('service brake');
+    const hasBrake = isEB || isSB || (event.includes('brake') && !event.includes('released'));
+
+    // Log every instance where a brake is active to match user expectation of "29 times"
+    if (hasBrake) {
+      brakeApplications.push({
+        time: getTrnTime(row),
+        type: isEB ? 'Emergency Brake (EB)' : (isSB ? 'Service Brake (SB)' : String(row[eventCol])),
+        speed: Number(row[speedCol]) || 0,
+        location: String(row[locationCol] || 'N/A'),
+        stationId: String(row[trnStnIdCol] || 'N/A'),
+        locoId: lIdVal,
+        radio: String(row[trnRadioCol] || '').trim()
+      });
+    }
+    
+    const currentState = isEB ? 'EB' : (isSB ? 'SB' : 'None');
+    lastBrakeState[lIdVal] = currentState;
+  });
 
   // Signal Overrides
   const signalOverrides = trnData
@@ -1371,10 +1486,61 @@ export const processDashboardData = (
     }
   }
 
-  // DYNAMIC CORRELATION: Update mode degradation reasons based on radio packet loss
+  // Radio Packet Loss Events (Separate from Mode Degradation)
+  const radioPacketLossEvents: DashboardStats['radioPacketLossEvents'] = [];
+  const seenRadioLoss = new Set<string>();
+  
+  trnData?.forEach(row => {
+    const event = String(row[eventCol] || '').toLowerCase();
+    const reason = String(row[reasonCol] || '').toLowerCase();
+    
+    // USER REQUEST: Exclude InterTagDistGreaterThanDupTag and NoTagMissing from Radio Packet Loss
+    const isInterTagDistIssue = reason.includes('intertagdistgreaterthanduptag') || 
+                                event.includes('intertagdistgreaterthanduptag');
+    const isNoTagIssue = reason.includes('notagmissing') || event.includes('notagmissing');
+
+    if ((event.includes('packet loss') || reason.includes('packet loss')) && !isInterTagDistIssue && !isNoTagIssue) {
+      const timeStr = getTrnTime(row);
+      const time = parseTime(timeStr);
+      const lId = String(row[trnLocoIdCol] || locoId).trim();
+      const res = String(row[reasonCol] || row[eventCol] || 'Packet Loss');
+      
+      const key = `${timeStr}|${lId}|${res}`;
+      if (seenRadioLoss.has(key)) return;
+      seenRadioLoss.add(key);
+
+      // Find duration from maPacketsProcessed (closest delay)
+      let duration = 0;
+      const closestPacket = maPacketsProcessed.find(p => {
+        const pTime = parseTime(p.time);
+        return Math.abs(pTime - time) < 2000; // Within 2 seconds
+      });
+      if (closestPacket) duration = closestPacket.delay;
+
+      const stnNameCol = findColumn(row, 'Station Name', 'StationName', 'Station_Name');
+      const stnName = stnNameCol ? String(row[stnNameCol] || '').trim() : String(row[trnKeys[2]] || '').trim();
+      
+      radioPacketLossEvents.push({
+        time: timeStr,
+        stationName: stnName,
+        reason: res,
+        details: String(row[lpResponseCol] || 'No Ack'),
+        locoId: lId,
+        duration: duration > 0 ? Number(duration.toFixed(1)) : undefined,
+        radio: String(row[trnRadioCol] || '').trim()
+      });
+    }
+  });
+
+  // DYNAMIC CORRELATION: Identify and separate radio-related degradations
+  const finalModeDegradations: DashboardStats['modeDegradations'] = [];
+  
   modeDegradations.forEach(deg => {
     const degTime = parseTime(deg.time);
-    if (isNaN(degTime)) return;
+    if (isNaN(degTime)) {
+      finalModeDegradations.push(deg);
+      return;
+    }
 
     // Look for radio packet timeouts (> 2s) within 10 seconds before the degradation
     const recentTimeouts = maPacketsProcessed.filter(p => {
@@ -1389,26 +1555,6 @@ export const processDashboardData = (
       return !isNaN(pTime) && pTime <= degTime && pTime >= degTime - 10000 && health !== 32 && health !== 0;
     });
 
-    if (recentTimeouts.length > 0 || recentNmsIssues.length > 0) {
-      let maxDelay = 0;
-      if (recentTimeouts.length > 0) {
-        maxDelay = Math.max(...recentTimeouts.map(p => p.delay));
-      } else {
-        // If we have NMS issues but no explicit delay recorded, assume at least 2s based on NMS timeout
-        maxDelay = 2.0;
-      }
-      
-      const radioInfo = `Radio Packet Loss (Max Delay: ${maxDelay.toFixed(1)}s)`;
-      
-      // Avoid redundancy if the reason already mentions radio loss
-      if (!deg.reason.toLowerCase().includes('radio') && !deg.reason.toLowerCase().includes('packet')) {
-        deg.reason = `${radioInfo} - ${deg.reason}`;
-      } else if (!deg.reason.includes('Max Delay')) {
-        // If it mentions radio but not the delay, add the delay
-        deg.reason = `${radioInfo} - ${deg.reason.replace(/radio\s*packet\s*loss/gi, '').replace(/^[\s-]+|[\s-]+$/g, '') || deg.reason}`;
-      }
-    }
-
     // Also check RF Signal Strength (Train-side)
     const recentRfDrops = rfData.filter(p => {
       const pTime = parseTime(getRfTime(p));
@@ -1416,11 +1562,28 @@ export const processDashboardData = (
       return !isNaN(pTime) && pTime <= degTime && pTime >= degTime - 10000 && perc < 80;
     });
 
-    if (recentRfDrops.length > 0 && !deg.reason.includes('Radio Packet Loss') && !deg.reason.includes('Poor RF Signal')) {
-      const minPerc = Math.min(...recentRfDrops.map(p => Number(p[percentageCol]) || 100));
-      deg.reason = `Poor RF Signal (${minPerc.toFixed(1)}%) - ${deg.reason}`;
+    if (recentTimeouts.length > 0 || recentNmsIssues.length > 0 || recentRfDrops.length > 0) {
+      // This is a communication-related degradation. Annotate and keep in modeDegradations.
+      let maxDelay = 0;
+      if (recentTimeouts.length > 0) {
+        maxDelay = Math.max(...recentTimeouts.map(p => p.delay));
+      } else {
+        maxDelay = 2.0;
+      }
+      
+      const radioInfo = recentRfDrops.length > 0 && recentTimeouts.length === 0 
+        ? `Poor RF Signal (${Math.min(...recentRfDrops.map(p => Number(p[percentageCol]) || 100)).toFixed(1)}%)`
+        : `Radio Packet Loss (Max Delay: ${maxDelay.toFixed(1)}s)`;
+      
+      // Annotate the reason but keep it in mode degradations
+      deg.reason = `${radioInfo} - ${deg.reason}`;
+      finalModeDegradations.push(deg);
+    } else {
+      finalModeDegradations.push(deg);
     }
   });
+
+  const modeDegradationsToUse = finalModeDegradations;
 
   const avgLag = maPacketsProcessed.length > 0
     ? maPacketsProcessed.reduce((a, b) => a + b.delay, 0) / maPacketsProcessed.length
@@ -1799,6 +1962,11 @@ export const processDashboardData = (
   });
 
   const topFaultyStations = Object.entries(stationFailures)
+    .filter(([stnId]) => {
+      const g = globalStationStats.get(stnId);
+      const globalPerf = g && g.exp > 0 ? (g.rec / g.exp) * 100 : 100;
+      return globalPerf < 95;
+    })
     .map(([stnId, data]) => {
       const healthScore = (data.workingEvents / (data.totalEvents || 1)) * 100;
       return {
@@ -2129,34 +2297,36 @@ export const processDashboardData = (
       .filter(c => c.locoAvg !== null && c.locoAvg < 90 && c.othersAvg > 95)
       .sort((a, b) => b.diff - a.diff);
 
-    lDrops.slice(0, 4).forEach(d => {
-      dTable.push({ station: d.stationId, locoVal: `${d.locoAvg?.toFixed(1)}%`, othersAvg: `${d.othersAvg.toFixed(1)}%` });
-    });
+    const isLFaulty = lDrops.length > 0 && lcoSideWeight > 50;
+    const isSFaulty = stnSideWeight > 50 && multiLocoBadStns.length > 0;
 
-    if (dTable.length === 0) {
-      const relevantStns = isAll ? topFaultyStations : topFaultyStations.filter(s => s.affectedLocos.includes(targetLocoId));
-      relevantStns.slice(0, 3).forEach(stn => {
-        const comp = stnComps.find(c => c.stationId === stn.stationId);
-        const locoAvg = comp?.locoAvg ?? stn.healthScore;
-        const others = comp?.othersAvg ?? 98.5;
-        dTable.push({ station: stn.stationId, locoVal: `${locoAvg.toFixed(1)}%`, othersAvg: `${others.toFixed(1)}%` });
+    if (isLFaulty) {
+      lDrops.slice(0, 4).forEach(d => {
+        dTable.push({ station: d.stationId, locoVal: `${d.locoAvg?.toFixed(1)}%`, othersAvg: `${d.othersAvg.toFixed(1)}%` });
       });
+
+      if (dTable.length === 0) {
+        const relevantStns = isAll ? topFaultyStations : topFaultyStations.filter(s => s.affectedLocos.includes(targetLocoId));
+        relevantStns.slice(0, 3).forEach(stn => {
+          const comp = stnComps.find(c => c.stationId === stn.stationId);
+          const locoAvg = comp?.locoAvg ?? stn.healthScore;
+          const others = comp?.othersAvg ?? 98.5;
+          dTable.push({ station: stn.stationId, locoVal: `${locoAvg.toFixed(1)}%`, othersAvg: `${others.toFixed(1)}%` });
+        });
+      }
     }
 
     const hBenchmark = stnComps
       .filter(c => c.othersAvg > 98)
       .sort((a, b) => b.othersAvg - a.othersAvg)[0] || stnComps[0];
 
-    const isLFaulty = lDrops.length > 0 && lcoSideWeight > 50;
-    const isSFaulty = stnSideWeight > 50 && multiLocoBadStns.length > 0;
-    
-    // Loco-specific priority: Only show stations where THIS loco also had issues
-    const locoSpecificPriority = multiLocoBadStns
-      .filter(s => isAll || stnLocoMetrics.get(String(s.stationId))?.has(targetLocoId))
-      .sort((a, b) => b.locoCount - a.locoCount || a.avgPerf - b.avgPerf)
-      .map(s => String(s.stationId));
+    const faultyStations = stnComps
+      .filter(c => c.othersAvg < 95)
+      .sort((a, b) => a.othersAvg - b.othersAvg); // Worst first
 
-    const topPriorityStns = locoSpecificPriority.slice(0, 15);
+    const topPriorityStns = faultyStations.map(s => String(s.stationId)).slice(0, 15);
+
+    const stationsWithNoData = Object.keys(stationMap).filter(sId => !stnLocoMetrics.has(sId));
 
     return {
       topFaultyStations: targetStnFailures,
@@ -2183,23 +2353,57 @@ export const processDashboardData = (
             ? `Loco ${isAll ? 'Fleet' : targetLocoId} showed performance drops at ${lDrops.length} stations while other locos performed normally there. This indicates a loco-side hardware/software issue.`
             : `Loco ${isAll ? 'Fleet' : targetLocoId} performance is equal to or better than the fleet average. No major loco-side issues detected.`,
           table: dTable,
-          causes: [
-            "Physical damage or loose connection in the loco antenna",
-            "RF transceiver module is weak (low power output)",
-            "TCAS software bug causing failures at specific station configurations"
-          ]
+          causes: isLFaulty 
+            ? [
+                "Physical damage or loose connection in the loco antenna",
+                "RF transceiver module is weak (low power output)",
+                "TCAS software bug causing failures at specific station configurations"
+              ]
+            : isSFaulty
+              ? [
+                  "Station TCAS antenna alignment issue",
+                  "Track-side RF modem power fluctuations",
+                  "Localized RF interference or signal shadowing"
+                ]
+              : []
         },
         problem2: {
           title: "Problem 2 — Station-side TCAS/RF Health",
           description: "When multiple independent locos fail at the same location, the station TCAS antenna or RF hardware should be inspected.",
-          priority: topPriorityStns.length > 0 ? topPriorityStns : ["VDH", "NVS", "SCH", "BIM", "ST", "UDN", "SJN_BLD", "BL", "BHET", "AML", "SJN", "ATUL", "UVD", "PAD", "KEB"]
+          priority: topPriorityStns
         },
-        amlConclusion: hBenchmark 
-          ? `${formatStationName(hBenchmark.stationId)} station is completely clear. Other locos achieved an average performance of ${hBenchmark.othersAvg.toFixed(1)}% here, proving that the track-side equipment is healthy.`
-          : "Fleet data suggests track-side equipment is generally healthy at major stations.",
-        actionRequired: isLFaulty
-          ? `Send Loco ${isAll ? 'Fleet' : targetLocoId} to the workshop — check the RF antenna and transceiver module, and verify the TCAS firmware version.`
-          : `Locomotive ${isAll ? 'All' : targetLocoId} is fit. It is recommended to inspect the station-side equipment (Priority: ${topPriorityStns.slice(0, 3).join(', ')}).`
+        amlConclusion: (() => {
+          const healthyCount = stnComps.filter(c => c.othersAvg >= 95).length;
+          const totalCount = stnComps.length;
+          const belowThresholdCount = totalCount - healthyCount;
+          
+          let text = `${healthyCount} of ${totalCount} stations performing within healthy limits (≥95%).`;
+          if (belowThresholdCount > 0) {
+            text += ` ${belowThresholdCount} station${belowThresholdCount > 1 ? 's are' : ' is'} below threshold and require${belowThresholdCount === 1 ? 's' : ''} inspection.`;
+          } else {
+            text += " Fleet data suggests track-side equipment is generally healthy at major stations.";
+          }
+          return text;
+        })(),
+        actionRequired: (() => {
+          if (isLFaulty) {
+            return `Send Loco ${isAll ? 'Fleet' : targetLocoId} to the workshop — check the RF antenna and transceiver module, and verify the TCAS firmware version.`;
+          }
+          
+          if (faultyStations.length > 0) {
+            let text = `Locomotive ${isAll ? 'fleet' : 'Loco ' + targetLocoId} is fit. It is recommended to inspect the station-side TCAS antenna and RF hardware at:\n`;
+            faultyStations.slice(0, 5).forEach((s, idx) => {
+              text += `Priority ${idx + 1} — ${formatStationName(stationMap[s.stationId] || s.stationId)} (${s.othersAvg.toFixed(2)}%)\n`;
+            });
+            
+            if (stationsWithNoData.length > 0) {
+              text += `\nAll other stations with available data are at or above 95%. ${stationsWithNoData.slice(0, 10).map(sId => formatStationName(stationMap[sId] || sId)).join(', ')} stations have no data uploaded yet.`;
+            }
+            return text;
+          }
+          
+          return `Locomotive ${isAll ? 'fleet' : 'Loco ' + targetLocoId} is fit and all stations are performing within healthy limits.`;
+        })()
       }
     };
   };
@@ -2306,7 +2510,8 @@ export const processDashboardData = (
     diagnosticAdvice,
     stationStats,
     rawRfLogs,
-    modeDegradations,
+    modeDegradations: modeDegradationsToUse,
+    radioPacketLossEvents,
     shortPackets,
     brakeApplications,
     signalOverrides,

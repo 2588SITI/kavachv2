@@ -56,6 +56,7 @@ export interface DashboardStats {
     totalPercSum: number;
   }[];
   modeDegradations: { time: string; from: string; to: string; reason: string; lpResponse: string; stationId: string; stationName?: string; locoId: string | number; radio?: string }[];
+  radioPacketLossEvents: { time: string; stationName: string; reason: string; details: string; locoId: string | number; duration?: number; radio?: string }[];
   shortPackets: { time: string; type: string; length: number; locoId: string | number; radio?: string }[];
   brakeApplications: { time: string; type: string; speed: number; location: string; stationId: string; locoId: string | number; radio?: string }[];
   signalOverrides: { time: string; signalId: string; status: string; stationId: string; locoId: string | number; radio?: string }[];

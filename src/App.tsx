@@ -10,6 +10,7 @@ import {
   CheckCircle2, 
   AlertCircle, 
   BarChart3, 
+  Calculator,
   Activity, 
   Database,
   Info,
@@ -21,6 +22,7 @@ import {
   Zap,
   MapPin,
   Download,
+  Wifi,
   FileText,
   RefreshCw
 } from 'lucide-react';
@@ -42,6 +44,7 @@ import {
 } from 'recharts';
 import { parseFile, processDashboardData, parseDateString, formatStationName } from './utils/dataProcessor';
 import { DashboardStats } from './types';
+import { CalculationMethodology } from './components/CalculationMethodology';
 import { cn } from './utils/cn';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -599,12 +602,61 @@ export default function App() {
         currentY = (doc as any).lastAutoTable.finalY + 15;
       }
 
+      // Mode Degradation Table
+      if (filteredStats.modeDegradations.length > 0) {
+        if (currentY > 240) { doc.addPage(); currentY = 20; }
+        doc.setFontSize(16);
+        doc.setTextColor(0, 102, 204);
+        doc.text('3. Mode Degradation Events', 20, currentY);
+        
+        const modeRows = filteredStats.modeDegradations.map(d => [
+          d.time, 
+          formatStationName(d.stationId), 
+          d.from, 
+          d.to, 
+          d.reason
+        ]);
+        autoTable(doc, {
+          startY: currentY + 5,
+          head: [['Time', 'Station', 'From', 'To', 'Reason']],
+          body: modeRows,
+          theme: 'striped',
+          headStyles: { fillColor: [220, 50, 50] },
+          styles: { fontSize: 8 }
+        });
+        currentY = (doc as any).lastAutoTable.finalY + 15;
+      }
+
+      // Brake Applications Table
+      if (filteredStats.brakeApplications.length > 0) {
+        if (currentY > 240) { doc.addPage(); currentY = 20; }
+        doc.setFontSize(16);
+        doc.setTextColor(0, 102, 204);
+        doc.text('4. Brake Applications by Kavach', 20, currentY);
+        
+        const brakeRows = filteredStats.brakeApplications.map(b => [
+          b.time, 
+          b.type, 
+          `${b.speed} Kmph`, 
+          b.location
+        ]);
+        autoTable(doc, {
+          startY: currentY + 5,
+          head: [['Time', 'Type', 'Speed', 'Location']],
+          body: brakeRows,
+          theme: 'striped',
+          headStyles: { fillColor: [245, 158, 11] }, // Amber-500
+          styles: { fontSize: 8 }
+        });
+        currentY = (doc as any).lastAutoTable.finalY + 15;
+      }
+
       // Diagnostic Advice
       if (currentY > 240) { doc.addPage(); currentY = 20; }
       
       doc.setFontSize(16);
       doc.setTextColor(0, 102, 204);
-      doc.text('3. Diagnostic Advice & Recommendations', 20, currentY);
+      doc.text('5. Diagnostic Advice & Recommendations', 20, currentY);
       
       let adviceY = currentY + 10;
       filteredStats.diagnosticAdvice.forEach((advice, index) => {
@@ -624,7 +676,7 @@ export default function App() {
       currentY = 20;
       doc.setFontSize(18);
       doc.setTextColor(0, 102, 204);
-      doc.text('4. Deep Analysis — Packet Loss Root Cause', 20, currentY);
+      doc.text('6. Deep Analysis — Packet Loss Root Cause', 20, currentY);
       
       doc.setFontSize(11);
       doc.setTextColor(0);
@@ -749,112 +801,13 @@ export default function App() {
       const actionLines = doc.splitTextToSize(filteredStats.stationDeepAnalysis.dashboard.actionRequired, 160);
       doc.text(actionLines, 25, currentY + 15);
 
-      // 5. Radio Loss Detailed Analysis
-      const radioEvents = filteredStats.stationDeepAnalysis.criticalEvents.filter(e => e.type === 'Radio Loss');
-      if (radioEvents.length > 0) {
-        doc.addPage();
-        currentY = 20;
-        doc.setFontSize(18);
-        doc.setTextColor(0, 102, 204);
-        doc.text('5. Radio Loss Detailed Analysis', 20, currentY);
-        
-        doc.setFontSize(11);
-        doc.setTextColor(0);
-        doc.setFont('helvetica', 'bold');
-        doc.text('Summary Metrics:', 25, currentY + 10);
-        doc.setFont('helvetica', 'normal');
-        
-        const totalEvents = radioEvents.length;
-        const avgDuration = Math.round(radioEvents.reduce((acc, e) => acc + e.duration, 0) / totalEvents);
-        const maxDuration = Math.max(...radioEvents.map(e => e.duration));
-        
-        doc.text(`Total Radio Loss Events: ${totalEvents}`, 30, currentY + 17);
-        doc.text(`Average Loss Duration: ${avgDuration}s`, 30, currentY + 24);
-        doc.text(`Maximum Loss Duration: ${maxDuration}s`, 30, currentY + 31);
-        
-        // Simple Bar Chart for top 10 longest radio losses
-        const topLosses = [...radioEvents].sort((a, b) => b.duration - a.duration).slice(0, 10);
-        if (topLosses.length > 0) {
-          doc.setFontSize(10);
-          doc.setFont('helvetica', 'bold');
-          doc.text('Top 10 Longest Radio Loss Events (Visual):', 25, currentY + 40);
-          
-          let chartY = currentY + 50;
-          const maxD = Math.max(...topLosses.map(e => e.duration));
-          
-          topLosses.forEach((e, i) => {
-            const barWidth = (e.duration / maxD) * 80;
-            doc.setFontSize(8);
-            doc.setFont('helvetica', 'normal');
-            doc.setTextColor(100);
-            doc.text(`${e.time} (${formatStationName(e.stationId)})`, 25, chartY + 3);
-            
-            doc.setFillColor(244, 63, 94);
-            doc.rect(75, chartY, barWidth, 4, 'F');
-            doc.setTextColor(0);
-            doc.text(`${e.duration}s`, 78 + barWidth, chartY + 3);
-            chartY += 8;
-          });
-          currentY = chartY + 10;
-        } else {
-          currentY += 40;
-        }
-        
-        doc.setFontSize(12);
-        doc.setFont('helvetica', 'bold');
-        doc.text('Chronological Radio Loss Log', 20, currentY);
-        
-        const radioRows = [...radioEvents].sort((a, b) => a.time.localeCompare(b.time)).map(e => {
-          const name = e.stationName && e.stationName !== 'N/A' && e.stationName !== '-' ? String(e.stationName) : '';
-          const id = e.stationId && e.stationId !== 'N/A' && e.stationId !== '-' ? formatStationName(e.stationId) : '';
-          let stn = 'Unknown Station';
-          
-          if (name && id) {
-            stn = `${formatStationName(name)} (${id})`;
-          } else if (name) {
-            stn = formatStationName(name);
-          } else if (id) {
-            stn = formatStationName(id);
-          }
-          
-          return [
-            e.time,
-            e.locoId,
-            stn,
-            `${e.duration}s`,
-            e.radio || 'Radio 1',
-            e.reason || 'N/A',
-            e.description
-          ];
-        });
-        
-        autoTable(doc, {
-          startY: currentY + 5,
-          head: [['Time', 'Loco ID', 'Station', 'Duration', 'Radio', 'Reason', 'Details']],
-          body: radioRows,
-          theme: 'grid',
-          headStyles: { fillColor: [225, 29, 72] }, // Rose-600
-          styles: { fontSize: 8 },
-          columnStyles: {
-            0: { cellWidth: 25 },
-            1: { cellWidth: 20 },
-            2: { cellWidth: 25 },
-            3: { cellWidth: 20 },
-            4: { cellWidth: 20 },
-            5: { cellWidth: 30 },
-            6: { cellWidth: 'auto' }
-          }
-        });
-        currentY = (doc as any).lastAutoTable.finalY + 15;
-      }
-
-      // 6. Moving Radio Loss Analysis (Speed > 0)
+      // 5. Moving Radio Loss Analysis (Speed > 0)
       if (filteredStats.movingRadioLoss && filteredStats.movingRadioLoss.length > 0) {
         doc.addPage();
         currentY = 20;
         doc.setFontSize(18);
         doc.setTextColor(0, 102, 204);
-        doc.text('6. Moving Radio Loss Analysis (Speed > 0)', 20, currentY);
+        doc.text('7. Moving Radio Loss Analysis (Speed > 0)', 20, currentY);
         
         doc.setFontSize(10);
         doc.setTextColor(80);
@@ -1582,6 +1535,7 @@ export default function App() {
                   <TabButton active={activeTab === 'sync'} onClick={() => setActiveTab('sync')} label="Sync" />
                   <TabButton active={activeTab === 'interval'} onClick={() => setActiveTab('interval')} label="Interval" />
                   <TabButton active={activeTab === 'moving'} onClick={() => setActiveTab('moving')} label="Moving Analysis" />
+                  <TabButton active={activeTab === 'methodology'} onClick={() => setActiveTab('methodology')} label="Methodology" />
                 </div>
               </div>
 
@@ -1663,7 +1617,7 @@ export default function App() {
               </div>
             </div>
 
-            {activeTab === 'summary' && filteredStats && <ExecutiveSummary stats={filteredStats} />}
+            {activeTab === 'summary' && filteredStats && <ExecutiveSummary stats={filteredStats} setActiveTab={setActiveTab} />}
             {activeTab === 'mapping' && filteredStats && <DeepMapping stats={filteredStats} files={files} />}
             {activeTab === 'station' && filteredStats && <StationAnalysis stats={filteredStats} />}
             {activeTab === 'expert' && filteredStats && <ExpertDiagnostics stats={filteredStats} tagSearch={tagSearch} setTagSearch={setTagSearch} />}
@@ -1672,6 +1626,7 @@ export default function App() {
             {activeTab === 'interval' && filteredStats && <IntervalAnalysis stats={filteredStats} />}
             {activeTab === 'radio' && filteredStats && <RadioLossAnalysis stats={filteredStats} />}
             {activeTab === 'moving' && filteredStats && <MovingAnalysis stats={filteredStats} />}
+            {activeTab === 'methodology' && <CalculationMethodology />}
           </div>
         )}
       </main>
@@ -1766,7 +1721,12 @@ function StationAnalysis({ stats }: { stats: DashboardStats }) {
               {/* Problem 1 */}
               <div className="space-y-4 bg-white/5 p-6 rounded-2xl border border-white/10">
                 <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                  <div className="w-2 h-2 bg-rose-500 rounded-full animate-ping" />
+                  <div className={cn(
+                    "w-2 h-2 rounded-full",
+                    stats.stationDeepAnalysis.dashboard.conclusion.includes('Fit') || stats.stationDeepAnalysis.dashboard.conclusion.includes('Healthy')
+                      ? "bg-emerald-400"
+                      : "bg-rose-500 animate-ping"
+                  )} />
                   {stats.stationDeepAnalysis.dashboard.problem1.title}
                 </h3>
                 <p className="text-slate-400 text-sm leading-relaxed">
@@ -1794,16 +1754,25 @@ function StationAnalysis({ stats }: { stats: DashboardStats }) {
                   </table>
                 </div>
 
-                <div className="space-y-2">
-                  <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Possible Causes:</p>
-                  <ul className="space-y-1">
-                    {stats.stationDeepAnalysis.dashboard.problem1.causes.map((cause, idx) => (
-                      <li key={idx} className="text-xs text-slate-400 flex items-start gap-2">
-                        <span className="text-rose-500 mt-1">•</span> {cause}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+                {stats.stationDeepAnalysis.dashboard.problem1.causes.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Possible Causes:</p>
+                    <ul className="space-y-1">
+                      {stats.stationDeepAnalysis.dashboard.problem1.causes.map((cause, idx) => (
+                        <li key={idx} className="text-xs text-slate-400 flex items-start gap-2">
+                          <span className="text-rose-500 mt-1">•</span> {cause}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {stats.stationDeepAnalysis.dashboard.problem1.causes.length === 0 && (
+                  <div className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-lg w-fit">
+                    <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-tight flex items-center gap-1">
+                      <ShieldCheck className="w-3 h-3" /> Locomotive cleared
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Problem 2 & AML */}
@@ -1816,14 +1785,16 @@ function StationAnalysis({ stats }: { stats: DashboardStats }) {
                   <p className="text-slate-400 text-sm leading-relaxed mt-2">
                     {stats.stationDeepAnalysis.dashboard.problem2.description}
                   </p>
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest w-full mb-1">Priority Order:</span>
-                    {stats.stationDeepAnalysis.dashboard.problem2.priority.map((stn, idx) => (
-                      <span key={idx} className="px-3 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-bold rounded-lg">
-                        {idx + 1}. {formatStationName(stn)}
-                      </span>
-                    ))}
-                  </div>
+                  {stats.stationDeepAnalysis.dashboard.problem2.priority.length > 0 && (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest w-full mb-1">Priority Order:</span>
+                      {stats.stationDeepAnalysis.dashboard.problem2.priority.map((stn, idx) => (
+                        <span key={idx} className="px-3 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-bold rounded-lg">
+                          {idx + 1}. {formatStationName(stn)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="bg-emerald-500/5 p-6 rounded-2xl border border-emerald-500/10">
@@ -1836,12 +1807,23 @@ function StationAnalysis({ stats }: { stats: DashboardStats }) {
                   </p>
                 </div>
 
-                <div className="bg-emerald-500 p-6 rounded-2xl shadow-xl shadow-emerald-500/20">
+                <div className={cn(
+                  "p-6 rounded-2xl shadow-xl",
+                  stats.stationDeepAnalysis.dashboard.conclusion.includes('Suspect') || stats.stationDeepAnalysis.dashboard.conclusion.includes('Multiple')
+                    ? "bg-rose-500 shadow-rose-500/20" 
+                    : stats.stationDeepAnalysis.dashboard.conclusion.includes('Station')
+                      ? "bg-amber-500 shadow-amber-500/20"
+                      : "bg-emerald-500 shadow-emerald-500/20"
+                )}>
                   <h3 className="text-lg font-black text-white flex items-center gap-2 uppercase tracking-tighter">
-                    <AlertTriangle className="w-6 h-6 text-white animate-bounce" />
+                    {stats.stationDeepAnalysis.dashboard.conclusion.includes('Fit') || stats.stationDeepAnalysis.dashboard.conclusion.includes('Healthy') ? (
+                      <CheckCircle2 className="w-6 h-6 text-white" />
+                    ) : (
+                      <AlertTriangle className="w-6 h-6 text-white animate-bounce" />
+                    )}
                     Action Required
                   </h3>
-                  <p className="text-white/90 text-sm font-bold mt-2 leading-relaxed">
+                  <p className="text-white/90 text-sm font-bold mt-2 leading-relaxed whitespace-pre-line">
                     {stats.stationDeepAnalysis.dashboard.actionRequired}
                   </p>
                 </div>
@@ -2623,7 +2605,7 @@ function StatusBox({ title, items }: { title: string; items: { label: string; st
   );
 }
 
-function ExecutiveSummary({ stats }: { stats: DashboardStats }) {
+function ExecutiveSummary({ stats, setActiveTab }: { stats: DashboardStats; setActiveTab: (tab: string) => void }) {
   const nmsColors: Record<string, string> = {
     '0': '#0066cc',
     '8': '#80ccff',
@@ -2785,6 +2767,19 @@ function ExecutiveSummary({ stats }: { stats: DashboardStats }) {
                 <span className="font-bold text-white">{d.value}</span>
               </div>
             ))}
+          </div>
+        </div>
+
+        <div className="glass-card p-6 rounded-2xl bg-emerald-500/5 border-emerald-500/20 group cursor-pointer hover:bg-emerald-500/10 transition-all" onClick={() => setActiveTab('methodology')}>
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="font-bold text-white text-sm uppercase tracking-wider opacity-70">Calculation Logic</h4>
+            <Calculator className="w-4 h-4 text-emerald-400 group-hover:scale-110 transition-transform" />
+          </div>
+          <p className="text-xs text-slate-400 leading-relaxed mb-4">
+            Station performance is calculated using <span className="text-emerald-400 font-bold">Weighted Averages</span> (Sum then Divide) to ensure accuracy across trips of varying lengths.
+          </p>
+          <div className="flex items-center gap-2 text-emerald-400 text-[10px] font-bold uppercase tracking-widest">
+            View Methodology <ArrowRight className="w-3 h-3" />
           </div>
         </div>
       </div>
